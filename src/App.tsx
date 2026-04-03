@@ -394,6 +394,12 @@ const formatPct = (value: number) => `${value.toFixed(3)}%`;
 const shortAddress = (address: string) => `${address.slice(0, 6)}...${address.slice(-4)}`;
 const resolveDeploymentAddress = (entry: DeploymentEntry) => entry.executorAddress ?? entry.programId ?? "Not set";
 const symbolCleanup = (symbol: string) => symbol.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+const prettifyDexId = (rawDexId: string) =>
+  rawDexId
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
+    .join(" ");
 const envRefresh = Number(import.meta.env.VITE_SCANNER_REFRESH_MS ?? "15000");
 const defaultEnv = (import.meta.env.VITE_DEFAULT_ENV ?? "testnet") as EnvMode;
 
@@ -418,7 +424,7 @@ const normalizeDexName = (networkKey: NetworkKey, rawDexId: string) => {
     }
   }
 
-  return "";
+  return prettifyDexId(rawDexId);
 };
 
 const getSolanaProvider = (walletName: string): SolanaLikeProvider | undefined => {
@@ -474,14 +480,18 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
   pairs.forEach((pair) => {
     const price = Number(pair.priceUsd);
     const liquidity = Number(pair.liquidity?.usd ?? 0);
-    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(liquidity) || liquidity < 50000) {
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(liquidity) || liquidity < 30000) {
       return;
     }
 
     const baseSymbol = symbolCleanup(pair.baseToken.symbol);
     const quoteSymbol = symbolCleanup(pair.quoteToken.symbol);
     const dexName = normalizeDexName(networkKey, pair.dexId);
-    if (!baseSymbol || !quoteSymbol || !dexName || (!mainTokenSet.has(baseSymbol) && !mainTokenSet.has(quoteSymbol))) {
+    if (!baseSymbol || !quoteSymbol || !dexName || !mainTokenSet.has(baseSymbol)) {
+      return;
+    }
+
+    if (!STABLE_SYMBOLS.has(quoteSymbol) && !mainTokenSet.has(quoteSymbol)) {
       return;
     }
 
@@ -515,7 +525,7 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
     const buyPrice = Number(buy.priceUsd);
     const sellPrice = Number(sell.priceUsd);
     const spreadPct = ((sellPrice - buyPrice) / buyPrice) * 100;
-    if (spreadPct < 0.4) {
+    if (spreadPct < 0.05) {
       return;
     }
 
@@ -525,16 +535,16 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
     const loanAssetUsd = mainTokenUsd.get(loanAsset) ?? 1;
     const runtime = RUNTIME[networkKey];
     const tokenDecimals = runtime.tokenDecimals[loanAsset] ?? 18;
-    const liquidityCapRatio = 0.008;
+    const liquidityCapRatio = 0.0025;
     const loanAmountUsd = Math.max(200, pairLiquidityUsd * liquidityCapRatio);
     const loanAmount = loanAmountUsd / Math.max(loanAssetUsd, 0.000001);
     const priceImpactPct = Math.min(1.4, (loanAmountUsd / pairLiquidityUsd) * 100 * 0.95);
     const flashFeePct = 0.09;
-    const dexFeePct = 0.24;
+    const dexFeePct = 0.08;
     const grossProfitUsd = loanAmountUsd * (spreadPct / 100);
     const totalFeeUsd = loanAmountUsd * ((flashFeePct + dexFeePct + priceImpactPct) / 100);
     const netProfitUsd = grossProfitUsd - totalFeeUsd;
-    if (netProfitUsd <= 5) {
+    if (netProfitUsd <= 0.2) {
       return;
     }
 
