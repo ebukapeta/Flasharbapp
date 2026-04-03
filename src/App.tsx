@@ -394,6 +394,12 @@ const formatPct = (value: number) => `${value.toFixed(3)}%`;
 const shortAddress = (address: string) => `${address.slice(0, 6)}...${address.slice(-4)}`;
 const resolveDeploymentAddress = (entry: DeploymentEntry) => entry.executorAddress ?? entry.programId ?? "Not set";
 const symbolCleanup = (symbol: string) => symbol.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+const sanitizeEvmAddress = (address: string) => {
+  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+    throw new Error(`Invalid EVM address: ${address}`);
+  }
+  return address.toLowerCase();
+};
 const prettifyDexId = (rawDexId: string) =>
   rawDexId
     .split(/[-_\s]+/)
@@ -447,10 +453,48 @@ async function fetchTokenPairs(chain: string, tokenAddress: string): Promise<Dex
   return Array.isArray(data) ? data : [];
 }
 
+async function fetchTokenBatchPairs(chain: string, tokenAddresses: string[]): Promise<DexScreenerPair[]> {
+  if (tokenAddresses.length === 0) {
+    return [];
+  }
+  const joined = tokenAddresses.join(",");
+  const url = `https://api.dexscreener.com/tokens/v1/${chain}/${joined}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    return [];
+  }
+  const data = (await response.json()) as DexScreenerPair[];
+  return Array.isArray(data) ? data : [];
+}
+
+async function fetchSearchPairs(chain: string, query: string): Promise<DexScreenerPair[]> {
+  const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    return [];
+  }
+
+  const payload = (await response.json()) as { pairs?: DexScreenerPair[] };
+  const pairs = Array.isArray(payload?.pairs) ? payload.pairs : [];
+  return pairs.filter((pair) => pair.chainId?.toLowerCase() === chain.toLowerCase());
+}
+
 function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
   const opportunities: Opportunity[] = [];
-  const pairBuckets = new Map<string, Array<DexScreenerPair & { baseSymbol: string; quoteSymbol: string; dexName: string }>>();
-  let poolCount = 0;
+  const pairBuckets = new Map<
+    string,
+    Array<
+      DexScreenerPair & {
+        baseSymbol: string;
+        quoteSymbol: string;
+        dexName: string;
+        loanAsset: string;
+        quoteAsset: string;
+        loanAssetAddress: string;
+        quoteAssetAddress: string;
+      }
+    >
+  >();
   const mainTokenSet = new Set(NETWORKS[networkKey].mainTokens.map((token) => token.toUpperCase()));
   const mainTokenUsd = new Map<string, number>();
 
@@ -464,17 +508,25 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
     const liquidity = Number(pair.liquidity?.usd ?? 0);
     const price = Number(pair.priceUsd);
 
-    if (!mainTokenSet.has(baseSymbol) || !STABLE_SYMBOLS.has(quoteSymbol) || !Number.isFinite(price) || price <= 0 || liquidity < 100000) {
+    const baseIsMain = mainTokenSet.has(baseSymbol);
+    const quoteIsMain = mainTokenSet.has(quoteSymbol);
+    if ((!baseIsMain && !quoteIsMain) || !Number.isFinite(price) || price <= 0 || liquidity < 80000) {
       return;
     }
 
-    const existing = mainTokenUsd.get(baseSymbol);
+    const mainSymbol = baseIsMain ? baseSymbol : quoteSymbol;
+    const stableSymbol = baseIsMain ? quoteSymbol : baseSymbol;
+    if (!STABLE_SYMBOLS.has(stableSymbol)) {
+      return;
+    }
+
+    const existing = mainTokenUsd.get(mainSymbol);
     if (!existing) {
-      mainTokenUsd.set(baseSymbol, price);
+      mainTokenUsd.set(mainSymbol, price);
       return;
     }
 
-    mainTokenUsd.set(baseSymbol, (existing + price) / 2);
+    mainTokenUsd.set(mainSymbol, (existing + price) / 2);
   });
 
   pairs.forEach((pair) => {
@@ -487,24 +539,38 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
     const baseSymbol = symbolCleanup(pair.baseToken.symbol);
     const quoteSymbol = symbolCleanup(pair.quoteToken.symbol);
     const dexName = normalizeDexName(networkKey, pair.dexId);
-    if (!baseSymbol || !quoteSymbol || !dexName || !mainTokenSet.has(baseSymbol)) {
+    if (!baseSymbol || !quoteSymbol || !dexName) {
       return;
     }
 
-    if (!STABLE_SYMBOLS.has(quoteSymbol) && !mainTokenSet.has(quoteSymbol)) {
+    const baseIsMain = mainTokenSet.has(baseSymbol);
+    const quoteIsMain = mainTokenSet.has(quoteSymbol);
+    if (!baseIsMain && !quoteIsMain) {
       return;
     }
 
-    const key = `${baseSymbol}/${quoteSymbol}`;
+    const loanAsset = baseIsMain ? baseSymbol : quoteSymbol;
+    const quoteAsset = baseIsMain ? quoteSymbol : baseSymbol;
+
+    if (!STABLE_SYMBOLS.has(quoteAsset) && !mainTokenSet.has(quoteAsset)) {
+      return;
+    }
+
+    const loanAssetAddress = baseIsMain ? pair.baseToken.address : pair.quoteToken.address;
+    const quoteAssetAddress = baseIsMain ? pair.quoteToken.address : pair.baseToken.address;
+    const key = `${loanAsset}/${quoteAsset}`;
     const bucket = pairBuckets.get(key) ?? [];
     bucket.push({
       ...pair,
       baseSymbol,
       quoteSymbol,
       dexName,
+      loanAsset,
+      quoteAsset,
+      loanAssetAddress,
+      quoteAssetAddress,
     });
     pairBuckets.set(key, bucket);
-    poolCount += 1;
   });
 
   const providerPool = NETWORKS[networkKey].flashLoanProviders;
@@ -530,8 +596,8 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
     }
 
     const pairLiquidityUsd = Math.min(Number(buy.liquidity?.usd ?? 0), Number(sell.liquidity?.usd ?? 0));
-    const loanAsset = mainTokenSet.has(buy.baseSymbol) ? buy.baseSymbol : buy.quoteSymbol;
-    const quoteAsset = loanAsset === buy.baseSymbol ? buy.quoteSymbol : buy.baseSymbol;
+    const loanAsset = buy.loanAsset;
+    const quoteAsset = buy.quoteAsset;
     const loanAssetUsd = mainTokenUsd.get(loanAsset) ?? 1;
     const runtime = RUNTIME[networkKey];
     const tokenDecimals = runtime.tokenDecimals[loanAsset] ?? 18;
@@ -570,8 +636,8 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
       loanAmount,
       loanAmountUsd,
       quoteAsset,
-      loanAssetAddress: loanAsset === buy.baseSymbol ? buy.baseToken.address : buy.quoteToken.address,
-      quoteAssetAddress: loanAsset === buy.baseSymbol ? buy.quoteToken.address : buy.baseToken.address,
+      loanAssetAddress: buy.loanAssetAddress,
+      quoteAssetAddress: buy.quoteAssetAddress,
       provider: providerPool[batchCounter % providerPool.length],
       poolAddress: buy.pairAddress,
       multicallBatch: batchCounter,
@@ -585,7 +651,7 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
 
   return {
     opportunities: opportunities.sort((a, b) => b.netProfitUsd - a.netProfitUsd).slice(0, 20),
-    allPoolCount: poolCount,
+    eligiblePoolCount: Array.from(pairBuckets.values()).reduce((total, bucket) => total + bucket.length, 0),
   };
 }
 
@@ -603,6 +669,7 @@ export default function App() {
   const [executionState, setExecutionState] = useState<ExecutionState | null>(null);
   const [tradeHistory, setTradeHistory] = useState<TradeRecord[]>([]);
   const [scanMeta, setScanMeta] = useState({ allPoolCount: 0, totalBatches: 0, multicallBatchSize: 24 });
+  const [liveTokenDepth, setLiveTokenDepth] = useState<Partial<Record<NetworkKey, Record<string, number>>>>({});
   const [routeCalldata, setRouteCalldata] = useState<RouteCalldataState>({ buyCalldata: "", sellCalldata: "", loading: false, error: "" });
 
   const scanIntervalRef = useRef<number | null>(null);
@@ -611,6 +678,7 @@ export default function App() {
   const activeNetwork = useMemo(() => NETWORKS[selectedNetwork], [selectedNetwork]);
   const activeRuntime = useMemo(() => RUNTIME[selectedNetwork], [selectedNetwork]);
   const activeWallet = walletsByNetwork[selectedNetwork];
+  const tokenDepthForNetwork = liveTokenDepth[selectedNetwork] ?? activeNetwork.tokenPairDepth;
   const activeTestnetDeploymentAddress = resolveDeploymentAddress(deploymentMap.testnet[selectedNetwork]);
   const activeMainnetDeploymentAddress = resolveDeploymentAddress(deploymentMap.mainnet[selectedNetwork]);
   const activeTestnetLinked = activeTestnetDeploymentAddress === activeNetwork.contractAddresses.testnet;
@@ -630,7 +698,8 @@ export default function App() {
   const runScanCycle = async () => {
     setScanError("");
     setScanProgress(12);
-    const tokens = Object.values(activeRuntime.tokenAddresses);
+    const tokenEntries = Object.entries(activeRuntime.tokenAddresses);
+    const tokens = tokenEntries.map(([, address]) => address);
     const batchSize = 24;
 
     try {
@@ -642,7 +711,7 @@ export default function App() {
       const expansionTokenAddresses = Array.from(
         new Set(
           primaryPairs
-            .filter((pair) => Number(pair.liquidity?.usd ?? 0) >= 100000)
+            .filter((pair) => Number(pair.liquidity?.usd ?? 0) >= 80000)
             .sort((a, b) => Number(b.liquidity?.usd ?? 0) - Number(a.liquidity?.usd ?? 0))
             .map((pair) => {
               const baseAddress = pair.baseToken.address.toLowerCase();
@@ -657,7 +726,7 @@ export default function App() {
               return "";
             })
             .filter((address) => address !== "")
-            .slice(0, 80),
+            .slice(0, 140),
         ),
       );
 
@@ -665,15 +734,63 @@ export default function App() {
         ? await Promise.all(expansionTokenAddresses.map((address) => fetchTokenPairs(activeRuntime.dexScreenerChain, address)))
         : [];
 
+      const tokenBatchCandidates = Array.from(new Set([...tokens, ...expansionTokenAddresses]));
+      const tokenBatchChunks: string[][] = [];
+      for (let index = 0; index < tokenBatchCandidates.length; index += 30) {
+        tokenBatchChunks.push(tokenBatchCandidates.slice(index, index + 30));
+      }
+      const batchedPairs = tokenBatchChunks.length > 0
+        ? await Promise.all(tokenBatchChunks.map((chunk) => fetchTokenBatchPairs(activeRuntime.dexScreenerChain, chunk)))
+        : [];
+
+      const searchQueries = Array.from(
+        new Set(
+          tokenEntries.flatMap(([symbol]) => [
+            symbol,
+            `${symbol}/USDT`,
+            `${symbol}/USDC`,
+            `${symbol}/WETH`,
+          ]),
+        ),
+      );
+      const searchedPairs = await Promise.all(searchQueries.map((query) => fetchSearchPairs(activeRuntime.dexScreenerChain, query)));
+
       setScanProgress(70);
-      const mergedPairs = [...primaryPairs, ...expansionPairs.flat()];
+      const mergedPairs = [...primaryPairs, ...expansionPairs.flat(), ...batchedPairs.flat(), ...searchedPairs.flat()];
       const uniquePairs = Array.from(new Map(mergedPairs.map((pair) => [`${pair.chainId}-${pair.pairAddress}-${pair.dexId}`, pair])).values());
+
+      const depthAccumulator: Record<string, number> = {};
+      activeNetwork.mainTokens.forEach((token) => {
+        depthAccumulator[token] = 0;
+      });
+
+      uniquePairs.forEach((pair) => {
+        const liquidity = Number(pair.liquidity?.usd ?? 0);
+        if (!Number.isFinite(liquidity) || liquidity < 50000) {
+          return;
+        }
+
+        const baseSymbol = symbolCleanup(pair.baseToken.symbol);
+        const quoteSymbol = symbolCleanup(pair.quoteToken.symbol);
+        if (depthAccumulator[baseSymbol] !== undefined) {
+          depthAccumulator[baseSymbol] += 1;
+        }
+        if (depthAccumulator[quoteSymbol] !== undefined) {
+          depthAccumulator[quoteSymbol] += 1;
+        }
+      });
+
+      const displayDepth = Object.fromEntries(
+        activeNetwork.mainTokens.map((token) => [token, Math.max(500, depthAccumulator[token] ?? 0)]),
+      );
+      setLiveTokenDepth((current) => ({ ...current, [selectedNetwork]: displayDepth }));
+
       const result = deriveOpportunities(selectedNetwork, uniquePairs);
 
       setOpportunities(result.opportunities);
       setScanMeta({
-        allPoolCount: result.allPoolCount,
-        totalBatches: Math.max(1, Math.ceil(result.allPoolCount / batchSize)),
+        allPoolCount: uniquePairs.length,
+        totalBatches: Math.max(1, Math.ceil(uniquePairs.length / batchSize)),
         multicallBatchSize: batchSize,
       });
       setScanProgress(100);
@@ -797,13 +914,15 @@ export default function App() {
     setRouteCalldata({ buyCalldata: "", sellCalldata: "", loading: true, error: "" });
 
     try {
-      const contractAddress = activeNetwork.contractAddresses[environment];
-      const loanAssetAddress = activeRuntime.tokenAddresses[opportunity.loanAsset] ?? opportunity.loanAssetAddress;
-      const quoteAssetAddress = activeRuntime.tokenAddresses[opportunity.quoteAsset] ?? opportunity.quoteAssetAddress;
+      const contractAddress = sanitizeEvmAddress(activeNetwork.contractAddresses[environment]);
+      const loanAssetAddressRaw = activeRuntime.tokenAddresses[opportunity.loanAsset] ?? opportunity.loanAssetAddress;
+      const quoteAssetAddressRaw = activeRuntime.tokenAddresses[opportunity.quoteAsset] ?? opportunity.quoteAssetAddress;
 
-      if (!loanAssetAddress || !quoteAssetAddress || !loanAssetAddress.startsWith("0x") || !quoteAssetAddress.startsWith("0x")) {
+      if (!loanAssetAddressRaw || !quoteAssetAddressRaw || !loanAssetAddressRaw.startsWith("0x") || !quoteAssetAddressRaw.startsWith("0x")) {
         throw new Error("Missing EVM token addresses for auto route generation.");
       }
+      const loanAssetAddress = sanitizeEvmAddress(loanAssetAddressRaw);
+      const quoteAssetAddress = sanitizeEvmAddress(quoteAssetAddressRaw);
 
       const loanAssetDecimals = activeRuntime.tokenDecimals[opportunity.loanAsset] ?? 18;
       const quoteAssetDecimals = activeRuntime.tokenDecimals[opportunity.quoteAsset] ?? 18;
@@ -843,22 +962,30 @@ export default function App() {
 
       setExecutionState((current) => (current ? { ...current, stepIndex: 1 } : current));
 
-      const providerAddress = activeRuntime.flashProviderAddresses[opportunity.provider];
-      const loanAssetAddress = activeRuntime.tokenAddresses[opportunity.loanAsset];
-      const buyDexRouter = activeRuntime.dexRouters[opportunity.buyDex] ?? activeRuntime.dexRouters[activeNetwork.dexes[0]];
-      const sellDexRouter = activeRuntime.dexRouters[opportunity.sellDex] ?? activeRuntime.dexRouters[activeNetwork.dexes[1]];
-      if (!providerAddress || !loanAssetAddress || !buyDexRouter || !sellDexRouter) {
+      const providerAddressRaw = activeRuntime.flashProviderAddresses[opportunity.provider];
+      const loanAssetAddressRaw = activeRuntime.tokenAddresses[opportunity.loanAsset];
+      const buyDexRouterRaw = activeRuntime.dexRouters[opportunity.buyDex] ?? activeRuntime.dexRouters[activeNetwork.dexes[0]];
+      const sellDexRouterRaw = activeRuntime.dexRouters[opportunity.sellDex] ?? activeRuntime.dexRouters[activeNetwork.dexes[1]];
+      if (!providerAddressRaw || !loanAssetAddressRaw || !buyDexRouterRaw || !sellDexRouterRaw) {
         throw new Error("Provider/router/token mapping missing for this opportunity.");
       }
+      const providerAddress = sanitizeEvmAddress(providerAddressRaw);
+      const loanAssetAddress = sanitizeEvmAddress(loanAssetAddressRaw);
+      const buyDexRouter = sanitizeEvmAddress(buyDexRouterRaw);
+      const sellDexRouter = sanitizeEvmAddress(sellDexRouterRaw);
 
       const tokenDecimals = activeRuntime.tokenDecimals[opportunity.loanAsset] ?? 18;
-      const contractAddress = activeNetwork.contractAddresses[environment];
+      const contractAddress = sanitizeEvmAddress(activeNetwork.contractAddresses[environment]);
       const loanAmount = parseUnits(opportunity.loanAmount.toFixed(Math.min(tokenDecimals, 6)), tokenDecimals);
       const minProfit = parseUnits((opportunity.netProfitAsset * 0.5).toFixed(Math.min(tokenDecimals, 6)), tokenDecimals);
 
       setExecutionState((current) => (current ? { ...current, stepIndex: 2 } : current));
       const signerProvider = new BrowserProvider(window.ethereum!);
       const signer = await signerProvider.getSigner();
+      const deployedCode = await signerProvider.getCode(contractAddress);
+      if (!deployedCode || deployedCode === "0x") {
+        throw new Error(`No contract deployed at executor address ${contractAddress} on selected network.`);
+      }
       const contract = new Contract(contractAddress, FLASH_EXECUTOR_ABI, signer);
 
       setExecutionState((current) => (current ? { ...current, stepIndex: 3 } : current));
@@ -1063,7 +1190,7 @@ export default function App() {
                   {activeNetwork.mainTokens.map((token) => (
                     <tr key={token} className="border-t border-slate-800">
                       <td className="py-2 pr-2 font-medium text-slate-200">{token}</td>
-                      <td className="py-2 pr-2 text-right">{activeNetwork.tokenPairDepth[token]}</td>
+                      <td className="py-2 pr-2 text-right">{tokenDepthForNetwork[token] ?? 0}</td>
                     </tr>
                   ))}
                 </tbody>
