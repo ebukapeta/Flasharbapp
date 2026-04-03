@@ -1,0 +1,22 @@
+{
+  "bsc": {
+    "network": "BSC Testnet",
+    "contractFile": "smart-contracts/evm/bsc/FlashArbitrageExecutorBsc.sol",
+    "executorAddress": "0xB5Ff4E4025Ae9E9A2F8a16bE7A9dB2e9B2E8C0a1"
+  },
+  "base": {
+    "network": "Base Sepolia",
+    "contractFile": "smart-contracts/evm/base/FlashArbitrageExecutorBase.sol",
+    "executorAddress": "0x0A8E03Da1249351C4f6D16a0d33b9d81F6f8A8B3"
+  },
+  "arbitrum": {
+    "network": "Arbitrum Sepolia",
+    "contractFile": "smart-contracts/evm/arbitrum/FlashArbitrageExecutorArbitrum.sol",
+    "executorAddress": "0x2c2e511Ec1A43f2787fD6B40f1C5C9CcAFA7F7B2"
+  },
+  "solana": {
+    "network": "Solana Devnet",
+    "contractFile": "smart-contracts/solana/flash_arb_executor.rs",
+    "programId": "ArbFlash1nDk4hT6wVtestnet8s2Qj5C3iN9qF2k"
+  }
+}

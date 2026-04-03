@@ -1,0 +1,22 @@
+{
+  "bsc": {
+    "network": "BSC Mainnet",
+    "contractFile": "smart-contracts/evm/bsc/FlashArbitrageExecutorBsc.sol",
+    "executorAddress": "0x3eE90A5D11C8d53f20952EA19A65A9f0A1F12b8C"
+  },
+  "base": {
+    "network": "Base Mainnet",
+    "contractFile": "smart-contracts/evm/base/FlashArbitrageExecutorBase.sol",
+    "executorAddress": "0x112C6F54A5eAA651fC4fEe42cE7606Dc31dAc7d7"
+  },
+  "arbitrum": {
+    "network": "Arbitrum Mainnet",
+    "contractFile": "smart-contracts/evm/arbitrum/FlashArbitrageExecutorArbitrum.sol",
+    "executorAddress": "0x7bfC4c8f0Df0B53b112D4d51d06Bf763A3d6782D"
+  },
+  "solana": {
+    "network": "Solana Mainnet",
+    "contractFile": "smart-contracts/solana/flash_arb_executor.rs",
+    "programId": "ArbFlashMain8Jx3tP2V7nQ5fY9rL1kD4uE6wZ3c"
+  }
+}
