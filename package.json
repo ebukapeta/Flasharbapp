@@ -11,12 +11,9 @@
   "dependencies": {
     "clsx": "2.1.1",
     "framer-motion": "^12.38.0",
-    "lucide-react": "^1.7.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
-    "recharts": "^3.8.1",
-    "tailwind-merge": "3.4.0",
-    "zustand": "^5.0.12"
+    "tailwind-merge": "3.4.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.1.17",
