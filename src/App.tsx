@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { BrowserProvider, Contract, parseUnits } from "ethers";
+import { BrowserProvider, Contract, Interface, parseUnits } from "ethers";
 import { useEffect, useMemo, useRef, useState } from "react";
 import mainnetDeployments from "../smart-contracts/deployments/mainnet.json";
 import testnetDeployments from "../smart-contracts/deployments/testnet.json";
@@ -35,8 +35,8 @@ interface DexScreenerPair {
   pairAddress: string;
   priceUsd: string;
   liquidity?: { usd?: number };
-  baseToken: { symbol: string };
-  quoteToken: { symbol: string };
+  baseToken: { symbol: string; address: string };
+  quoteToken: { symbol: string; address: string };
 }
 
 interface ConnectedWallet {
@@ -65,9 +65,19 @@ interface Opportunity {
   loanAsset: string;
   loanAmount: number;
   loanAmountUsd: number;
+  quoteAsset: string;
+  loanAssetAddress: string;
+  quoteAssetAddress: string;
   provider: string;
   poolAddress: string;
   multicallBatch: number;
+}
+
+interface RouteCalldataState {
+  buyCalldata: string;
+  sellCalldata: string;
+  loading: boolean;
+  error: string;
 }
 
 interface TradeRecord {
@@ -270,6 +280,44 @@ const FLASH_EXECUTOR_ABI = [
   "function executeArbitrage(address provider, tuple(address loanAsset,uint256 loanAmount,uint256 minProfit,address buyDexRouter,address sellDexRouter,bytes buyCalldata,bytes sellCalldata) params) external",
 ];
 
+const V2_ROUTER_ABI = [
+  "function swapExactTokensForTokens(uint256 amountIn,uint256 amountOutMin,address[] path,address to,uint256 deadline)",
+];
+
+const V3_ROUTER_ABI = [
+  "function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 deadline,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96) params)",
+];
+
+const v2Interface = new Interface(V2_ROUTER_ABI);
+const v3Interface = new Interface(V3_ROUTER_ABI);
+
+const DEX_STYLE: Record<NetworkKey, Record<string, "v2" | "v3">> = {
+  bsc: {
+    "PancakeSwap V3": "v3",
+    THENA: "v2",
+    Biswap: "v2",
+    ApeSwap: "v2",
+  },
+  base: {
+    Aerodrome: "v2",
+    "Uniswap V3": "v3",
+    Sushi: "v2",
+    BaseSwap: "v2",
+  },
+  arbitrum: {
+    "Uniswap V3": "v3",
+    Camelot: "v2",
+    Sushi: "v2",
+    "Trader Joe": "v2",
+  },
+  solana: {
+    Orca: "v2",
+    "Raydium CLMM": "v3",
+    Meteora: "v2",
+    Phoenix: "v2",
+  },
+};
+
 const walletOptions: Record<ChainType, string[]> = {
   evm: ["MetaMask", "Rabby", "Trust Wallet"],
   solana: ["Phantom", "Solflare", "Backpack"],
@@ -288,13 +336,90 @@ const deploymentMap: Record<EnvMode, Record<NetworkKey, DeploymentEntry>> = {
   mainnet: mainnetDeployments as Record<NetworkKey, DeploymentEntry>,
 };
 
+const DEX_ID_ALIASES: Record<NetworkKey, Record<string, string>> = {
+  bsc: {
+    pancakeswap: "PancakeSwap V3",
+    "pancakeswap-v3": "PancakeSwap V3",
+    "pancakeswap-amm": "PancakeSwap V3",
+    "pancakeswap-amm-v3": "PancakeSwap V3",
+    "pancakeswap-v2": "PancakeSwap V3",
+    thena: "THENA",
+    "thena-fusion": "THENA",
+    "thena-v3": "THENA",
+    biswap: "Biswap",
+    apeswap: "ApeSwap",
+  },
+  solana: {
+    orca: "Orca",
+    raydium: "Raydium CLMM",
+    "raydium-clmm": "Raydium CLMM",
+    meteora: "Meteora",
+    phoenix: "Phoenix",
+  },
+  base: {
+    aerodrome: "Aerodrome",
+    "aerodrome-slipstream": "Aerodrome",
+    uniswap: "Uniswap V3",
+    "uniswap-v3": "Uniswap V3",
+    sushi: "Sushi",
+    sushiswap: "Sushi",
+    baseswap: "BaseSwap",
+  },
+  arbitrum: {
+    uniswap: "Uniswap V3",
+    "uniswap-v3": "Uniswap V3",
+    camelot: "Camelot",
+    "camelot-v3": "Camelot",
+    "camelot-v2": "Camelot",
+    sushi: "Sushi",
+    sushiswap: "Sushi",
+    traderjoe: "Trader Joe",
+    "trader-joe": "Trader Joe",
+    "trader-joe-v2": "Trader Joe",
+  },
+};
+
+const STABLE_SYMBOLS = new Set(["USDT", "USDC", "DAI", "FDUSD", "BUSD", "USDE", "USDBC"]);
+
+const MAIN_TOKEN_USD_FALLBACKS: Record<NetworkKey, Record<string, number>> = {
+  bsc: { USDT: 1, USDC: 1, WBNB: 600, BTCB: 68000, WETH: 3200, WBTC: 68000 },
+  solana: { USDC: 1, USDT: 1, WSOL: 145, MSOL: 165, JUP: 1.2, BONK: 0.000025 },
+  base: { USDC: 1, USDT: 1, DAI: 1, WETH: 3200, cbBTC: 68000, AERO: 1.4 },
+  arbitrum: { USDC: 1, USDT: 1, DAI: 1, WETH: 3200, WBTC: 68000, ARB: 1.1 },
+};
+
 const formatUsd = (value: number) => `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 const formatAsset = (value: number, symbol: string) => `${value.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${symbol}`;
 const formatPct = (value: number) => `${value.toFixed(3)}%`;
 const shortAddress = (address: string) => `${address.slice(0, 6)}...${address.slice(-4)}`;
 const resolveDeploymentAddress = (entry: DeploymentEntry) => entry.executorAddress ?? entry.programId ?? "Not set";
+const symbolCleanup = (symbol: string) => symbol.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
 const envRefresh = Number(import.meta.env.VITE_SCANNER_REFRESH_MS ?? "15000");
 const defaultEnv = (import.meta.env.VITE_DEFAULT_ENV ?? "testnet") as EnvMode;
+
+const normalizeDexName = (networkKey: NetworkKey, rawDexId: string) => {
+  const canonical = rawDexId.trim().toLowerCase();
+  if (!canonical) {
+    return "";
+  }
+
+  if (/^0x[a-f0-9]{40}$/i.test(canonical)) {
+    return "";
+  }
+
+  const aliasMap = DEX_ID_ALIASES[networkKey];
+  if (aliasMap[canonical]) {
+    return aliasMap[canonical];
+  }
+
+  for (const [alias, mapped] of Object.entries(aliasMap)) {
+    if (canonical.includes(alias) || alias.includes(canonical)) {
+      return mapped;
+    }
+  }
+
+  return "";
+};
 
 const getSolanaProvider = (walletName: string): SolanaLikeProvider | undefined => {
   if (walletName === "Backpack") {
@@ -318,18 +443,56 @@ async function fetchTokenPairs(chain: string, tokenAddress: string): Promise<Dex
 
 function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
   const opportunities: Opportunity[] = [];
-  const pairBuckets = new Map<string, DexScreenerPair[]>();
+  const pairBuckets = new Map<string, Array<DexScreenerPair & { baseSymbol: string; quoteSymbol: string; dexName: string }>>();
   let poolCount = 0;
+  const mainTokenSet = new Set(NETWORKS[networkKey].mainTokens.map((token) => token.toUpperCase()));
+  const mainTokenUsd = new Map<string, number>();
+
+  Object.entries(MAIN_TOKEN_USD_FALLBACKS[networkKey]).forEach(([token, usd]) => {
+    mainTokenUsd.set(token.toUpperCase(), usd);
+  });
+
+  pairs.forEach((pair) => {
+    const baseSymbol = symbolCleanup(pair.baseToken.symbol);
+    const quoteSymbol = symbolCleanup(pair.quoteToken.symbol);
+    const liquidity = Number(pair.liquidity?.usd ?? 0);
+    const price = Number(pair.priceUsd);
+
+    if (!mainTokenSet.has(baseSymbol) || !STABLE_SYMBOLS.has(quoteSymbol) || !Number.isFinite(price) || price <= 0 || liquidity < 100000) {
+      return;
+    }
+
+    const existing = mainTokenUsd.get(baseSymbol);
+    if (!existing) {
+      mainTokenUsd.set(baseSymbol, price);
+      return;
+    }
+
+    mainTokenUsd.set(baseSymbol, (existing + price) / 2);
+  });
 
   pairs.forEach((pair) => {
     const price = Number(pair.priceUsd);
     const liquidity = Number(pair.liquidity?.usd ?? 0);
-    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(liquidity) || liquidity < 120000) {
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(liquidity) || liquidity < 50000) {
       return;
     }
-    const key = `${pair.baseToken.symbol}/${pair.quoteToken.symbol}`;
+
+    const baseSymbol = symbolCleanup(pair.baseToken.symbol);
+    const quoteSymbol = symbolCleanup(pair.quoteToken.symbol);
+    const dexName = normalizeDexName(networkKey, pair.dexId);
+    if (!baseSymbol || !quoteSymbol || !dexName || (!mainTokenSet.has(baseSymbol) && !mainTokenSet.has(quoteSymbol))) {
+      return;
+    }
+
+    const key = `${baseSymbol}/${quoteSymbol}`;
     const bucket = pairBuckets.get(key) ?? [];
-    bucket.push(pair);
+    bucket.push({
+      ...pair,
+      baseSymbol,
+      quoteSymbol,
+      dexName,
+    });
     pairBuckets.set(key, bucket);
     poolCount += 1;
   });
@@ -345,7 +508,7 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
     const sorted = [...bucket].sort((a, b) => Number(a.priceUsd) - Number(b.priceUsd));
     const buy = sorted[0];
     const sell = sorted[sorted.length - 1];
-    if (buy.dexId === sell.dexId) {
+    if (buy.dexName === sell.dexName) {
       return;
     }
 
@@ -357,12 +520,14 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
     }
 
     const pairLiquidityUsd = Math.min(Number(buy.liquidity?.usd ?? 0), Number(sell.liquidity?.usd ?? 0));
-    const loanAsset = buy.baseToken.symbol.toUpperCase();
+    const loanAsset = mainTokenSet.has(buy.baseSymbol) ? buy.baseSymbol : buy.quoteSymbol;
+    const quoteAsset = loanAsset === buy.baseSymbol ? buy.quoteSymbol : buy.baseSymbol;
+    const loanAssetUsd = mainTokenUsd.get(loanAsset) ?? 1;
     const runtime = RUNTIME[networkKey];
     const tokenDecimals = runtime.tokenDecimals[loanAsset] ?? 18;
     const liquidityCapRatio = 0.008;
     const loanAmountUsd = Math.max(200, pairLiquidityUsd * liquidityCapRatio);
-    const loanAmount = loanAmountUsd / buyPrice;
+    const loanAmount = loanAmountUsd / Math.max(loanAssetUsd, 0.000001);
     const priceImpactPct = Math.min(1.4, (loanAmountUsd / pairLiquidityUsd) * 100 * 0.95);
     const flashFeePct = 0.09;
     const dexFeePct = 0.24;
@@ -376,8 +541,8 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
     opportunities.push({
       id: `${networkKey}-${pairKey}-${buy.pairAddress}-${sell.pairAddress}`,
       pair: pairKey,
-      buyDex: buy.dexId,
-      sellDex: sell.dexId,
+      buyDex: buy.dexName,
+      sellDex: sell.dexName,
       buyPrice,
       sellPrice,
       spreadPct,
@@ -385,15 +550,18 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
       priceImpactPct,
       flashFeePct,
       dexFeePct,
-      totalFeeAsset: totalFeeUsd / buyPrice,
+      totalFeeAsset: totalFeeUsd / Math.max(loanAssetUsd, 0.000001),
       totalFeeUsd,
-      grossProfitAsset: grossProfitUsd / buyPrice,
+      grossProfitAsset: grossProfitUsd / Math.max(loanAssetUsd, 0.000001),
       grossProfitUsd,
-      netProfitAsset: netProfitUsd / buyPrice,
+      netProfitAsset: netProfitUsd / Math.max(loanAssetUsd, 0.000001),
       netProfitUsd,
       loanAsset,
       loanAmount,
       loanAmountUsd,
+      quoteAsset,
+      loanAssetAddress: loanAsset === buy.baseSymbol ? buy.baseToken.address : buy.quoteToken.address,
+      quoteAssetAddress: loanAsset === buy.baseSymbol ? buy.quoteToken.address : buy.baseToken.address,
       provider: providerPool[batchCounter % providerPool.length],
       poolAddress: buy.pairAddress,
       multicallBatch: batchCounter,
@@ -425,7 +593,7 @@ export default function App() {
   const [executionState, setExecutionState] = useState<ExecutionState | null>(null);
   const [tradeHistory, setTradeHistory] = useState<TradeRecord[]>([]);
   const [scanMeta, setScanMeta] = useState({ allPoolCount: 0, totalBatches: 0, multicallBatchSize: 24 });
-  const [routeCalldata, setRouteCalldata] = useState({ buyCalldata: "", sellCalldata: "" });
+  const [routeCalldata, setRouteCalldata] = useState<RouteCalldataState>({ buyCalldata: "", sellCalldata: "", loading: false, error: "" });
 
   const scanIntervalRef = useRef<number | null>(null);
   const progressTimeoutRef = useRef<number | null>(null);
@@ -457,14 +625,45 @@ export default function App() {
 
     try {
       const pairsByToken = await Promise.all(tokens.map((address) => fetchTokenPairs(activeRuntime.dexScreenerChain, address)));
+      setScanProgress(42);
+      const primaryPairs = pairsByToken.flat();
+
+      const mainTokenAddresses = new Set(tokens.map((address) => address.toLowerCase()));
+      const expansionTokenAddresses = Array.from(
+        new Set(
+          primaryPairs
+            .filter((pair) => Number(pair.liquidity?.usd ?? 0) >= 100000)
+            .sort((a, b) => Number(b.liquidity?.usd ?? 0) - Number(a.liquidity?.usd ?? 0))
+            .map((pair) => {
+              const baseAddress = pair.baseToken.address.toLowerCase();
+              const quoteAddress = pair.quoteToken.address.toLowerCase();
+
+              if (mainTokenAddresses.has(baseAddress) && !mainTokenAddresses.has(quoteAddress)) {
+                return pair.quoteToken.address;
+              }
+              if (mainTokenAddresses.has(quoteAddress) && !mainTokenAddresses.has(baseAddress)) {
+                return pair.baseToken.address;
+              }
+              return "";
+            })
+            .filter((address) => address !== "")
+            .slice(0, 80),
+        ),
+      );
+
+      const expansionPairs = expansionTokenAddresses.length > 0
+        ? await Promise.all(expansionTokenAddresses.map((address) => fetchTokenPairs(activeRuntime.dexScreenerChain, address)))
+        : [];
+
       setScanProgress(70);
-      const mergedPairs = pairsByToken.flat();
-      const result = deriveOpportunities(selectedNetwork, mergedPairs);
+      const mergedPairs = [...primaryPairs, ...expansionPairs.flat()];
+      const uniquePairs = Array.from(new Map(mergedPairs.map((pair) => [`${pair.chainId}-${pair.pairAddress}-${pair.dexId}`, pair])).values());
+      const result = deriveOpportunities(selectedNetwork, uniquePairs);
 
       setOpportunities(result.opportunities);
       setScanMeta({
         allPoolCount: result.allPoolCount,
-        totalBatches: Math.ceil(tokens.length / batchSize),
+        totalBatches: Math.max(1, Math.ceil(result.allPoolCount / batchSize)),
         multicallBatchSize: batchSize,
       });
       setScanProgress(100);
@@ -557,6 +756,66 @@ export default function App() {
     });
   };
 
+  const buildSwapCalldata = (dexName: string, tokenIn: string, tokenOut: string, amountInRaw: bigint, recipient: string) => {
+    const dexStyle = DEX_STYLE[selectedNetwork][dexName] ?? "v2";
+    const deadline = Math.floor(Date.now() / 1000) + 60 * 10;
+
+    if (dexStyle === "v3") {
+      return v3Interface.encodeFunctionData("exactInputSingle", [
+        {
+          tokenIn,
+          tokenOut,
+          fee: 3000,
+          recipient,
+          deadline,
+          amountIn: amountInRaw,
+          amountOutMinimum: 0,
+          sqrtPriceLimitX96: 0,
+        },
+      ]);
+    }
+
+    return v2Interface.encodeFunctionData("swapExactTokensForTokens", [amountInRaw, 0, [tokenIn, tokenOut], recipient, deadline]);
+  };
+
+  const autoGenerateCalldata = (opportunity: Opportunity) => {
+    if (activeNetwork.chainType !== "evm") {
+      setRouteCalldata({ buyCalldata: "", sellCalldata: "", loading: false, error: "Auto route generation is available on EVM networks in this release." });
+      return;
+    }
+
+    setRouteCalldata({ buyCalldata: "", sellCalldata: "", loading: true, error: "" });
+
+    try {
+      const contractAddress = activeNetwork.contractAddresses[environment];
+      const loanAssetAddress = activeRuntime.tokenAddresses[opportunity.loanAsset] ?? opportunity.loanAssetAddress;
+      const quoteAssetAddress = activeRuntime.tokenAddresses[opportunity.quoteAsset] ?? opportunity.quoteAssetAddress;
+
+      if (!loanAssetAddress || !quoteAssetAddress || !loanAssetAddress.startsWith("0x") || !quoteAssetAddress.startsWith("0x")) {
+        throw new Error("Missing EVM token addresses for auto route generation.");
+      }
+
+      const loanAssetDecimals = activeRuntime.tokenDecimals[opportunity.loanAsset] ?? 18;
+      const quoteAssetDecimals = activeRuntime.tokenDecimals[opportunity.quoteAsset] ?? 18;
+
+      const buyAmountRaw = parseUnits(opportunity.loanAmount.toFixed(Math.min(loanAssetDecimals, 6)), loanAssetDecimals);
+      const intermediateQuoteAmount = Math.max(opportunity.loanAmountUsd, 1) / Math.max(0.0000001, opportunity.sellPrice);
+      const sellAmountRaw = parseUnits(intermediateQuoteAmount.toFixed(Math.min(quoteAssetDecimals, 6)), quoteAssetDecimals);
+
+      const buyCalldata = buildSwapCalldata(opportunity.buyDex, loanAssetAddress, quoteAssetAddress, buyAmountRaw, contractAddress);
+      const sellCalldata = buildSwapCalldata(opportunity.sellDex, quoteAssetAddress, loanAssetAddress, sellAmountRaw, contractAddress);
+
+      setRouteCalldata({ buyCalldata, sellCalldata, loading: false, error: "" });
+    } catch (error) {
+      setRouteCalldata({
+        buyCalldata: "",
+        sellCalldata: "",
+        loading: false,
+        error: error instanceof Error ? error.message : "Failed to auto generate router calldata.",
+      });
+    }
+  };
+
   const beginExecution = async (opportunity: Opportunity) => {
     setConfirmOpportunity(null);
     setExecutionState({ opportunity, status: "running", stepIndex: 0 });
@@ -569,7 +828,7 @@ export default function App() {
         throw new Error("Connect wallet before execution.");
       }
       if (!routeCalldata.buyCalldata.startsWith("0x") || !routeCalldata.sellCalldata.startsWith("0x")) {
-        throw new Error("Buy and sell calldata must be hex values starting with 0x.");
+        throw new Error("Route calldata was not generated. Re-open the opportunity and try again.");
       }
 
       setExecutionState((current) => (current ? { ...current, stepIndex: 1 } : current));
@@ -716,7 +975,7 @@ export default function App() {
                 Executor contract ({environment}): <span className="text-cyan-300">{activeNetwork.contractAddresses[environment]}</span>
               </p>
               <p>
-                Multicall mode: {scanMeta.totalBatches} batches, batch size {scanMeta.multicallBatchSize}, hardcoded pool universe {scanMeta.allPoolCount}
+                Multicall mode: {scanMeta.totalBatches} batches, batch size {scanMeta.multicallBatchSize}, pool universe {scanMeta.allPoolCount}
               </p>
               {scanError && <p className="text-rose-300">{scanError}</p>}
             </div>
@@ -780,21 +1039,21 @@ export default function App() {
         </section>
 
         <section className="grid gap-4 lg:grid-cols-12">
-          <div className="border border-slate-800/90 bg-slate-900/70 p-4 lg:col-span-4">
+          <div className="overflow-hidden border border-slate-800/90 bg-slate-900/70 p-4 lg:col-span-4">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-200">Scanner token depth</h2>
             <div className="mt-3 overflow-x-auto">
-              <table className="w-full min-w-[320px] text-left text-xs">
+              <table className="w-full text-left text-xs sm:min-w-[320px]">
                 <thead className="text-slate-400">
                   <tr>
                     <th className="pb-2">Main token</th>
-                    <th className="pb-2">Pairs</th>
+                    <th className="pb-2 text-right">Pairs</th>
                   </tr>
                 </thead>
                 <tbody>
                   {activeNetwork.mainTokens.map((token) => (
                     <tr key={token} className="border-t border-slate-800">
                       <td className="py-2 pr-2 font-medium text-slate-200">{token}</td>
-                      <td className="py-2 pr-2">{activeNetwork.tokenPairDepth[token]}</td>
+                      <td className="py-2 pr-2 text-right">{activeNetwork.tokenPairDepth[token]}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -802,15 +1061,51 @@ export default function App() {
             </div>
           </div>
 
-          <div className="border border-slate-800/90 bg-slate-900/70 p-4 lg:col-span-8">
+          <div className="overflow-hidden border border-slate-800/90 bg-slate-900/70 p-4 lg:col-span-8">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-200">Live opportunities</h2>
-            <div className="mt-3 overflow-x-auto">
+            <div className="mt-3 space-y-3 md:hidden">
+              {opportunities.length === 0 ? (
+                <p className="border border-slate-800 bg-slate-950/40 px-3 py-4 text-center text-xs text-slate-400">No opportunities found in this scan.</p>
+              ) : (
+                opportunities.map((opportunity) => (
+                  <div key={opportunity.id} className="border border-slate-800 bg-slate-950/40 p-3">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <p className="font-medium text-slate-200">{opportunity.pair}</p>
+                      <p className="text-emerald-300">{formatPct(opportunity.spreadPct)}</p>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-y-1 text-xs text-slate-300">
+                      <p>Buy: {opportunity.buyDex}</p>
+                      <p>Sell: {opportunity.sellDex}</p>
+                      <p>Buy token price: {formatUsd(opportunity.buyPrice)}</p>
+                      <p>Sell token price: {formatUsd(opportunity.sellPrice)}</p>
+                      <p>{formatAsset(opportunity.loanAmount, opportunity.loanAsset)}</p>
+                      <p>{formatUsd(opportunity.loanAmountUsd)}</p>
+                      <p className="text-emerald-300">Net: {formatAsset(opportunity.netProfitAsset, opportunity.loanAsset)}</p>
+                      <p className="text-emerald-300">{formatUsd(opportunity.netProfitUsd)}</p>
+                    </div>
+                    <button
+                      disabled={!activeWallet}
+                      onClick={() => {
+                        autoGenerateCalldata(opportunity);
+                        setConfirmOpportunity(opportunity);
+                      }}
+                      className="mt-3 w-full bg-cyan-400 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                    >
+                      Execute
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="mt-3 hidden overflow-x-auto md:block">
               <table className="w-full min-w-[1200px] text-left text-xs">
                 <thead className="text-slate-400">
                   <tr>
                     <th className="pb-2">Pair</th>
                     <th className="pb-2">Buy DEX</th>
                     <th className="pb-2">Sell DEX</th>
+                    <th className="pb-2">Buy token price (USD)</th>
+                    <th className="pb-2">Sell token price (USD)</th>
                     <th className="pb-2">Spread</th>
                     <th className="pb-2">Loan asset</th>
                     <th className="pb-2">Gross profit</th>
@@ -822,44 +1117,54 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {opportunities.map((opportunity) => (
-                    <tr key={opportunity.id} className="border-t border-slate-800 align-top">
-                      <td className="py-2 pr-2">{opportunity.pair}</td>
-                      <td className="py-2 pr-2">{opportunity.buyDex}</td>
-                      <td className="py-2 pr-2">{opportunity.sellDex}</td>
-                      <td className="py-2 pr-2 text-emerald-300">{formatPct(opportunity.spreadPct)}</td>
-                      <td className="py-2 pr-2">
-                        <p>{formatAsset(opportunity.loanAmount, opportunity.loanAsset)}</p>
-                        <p className="text-slate-400">{formatUsd(opportunity.loanAmountUsd)}</p>
-                      </td>
-                      <td className="py-2 pr-2">
-                        <p>{formatAsset(opportunity.grossProfitAsset, opportunity.loanAsset)}</p>
-                        <p className="text-slate-400">{formatUsd(opportunity.grossProfitUsd)}</p>
-                      </td>
-                      <td className="py-2 pr-2">
-                        <p className="text-emerald-300">{formatAsset(opportunity.netProfitAsset, opportunity.loanAsset)}</p>
-                        <p className="text-slate-400">{formatUsd(opportunity.netProfitUsd)}</p>
-                      </td>
-                      <td className="py-2 pr-2">{formatPct(opportunity.priceImpactPct)}</td>
-                      <td className="py-2 pr-2">{formatUsd(opportunity.pairLiquidityUsd)}</td>
-                      <td className="py-2 pr-2">
-                        <p>{formatAsset(opportunity.totalFeeAsset, opportunity.loanAsset)}</p>
-                        <p className="text-slate-400">{formatUsd(opportunity.totalFeeUsd)}</p>
-                      </td>
-                      <td className="py-2">
-                        <button
-                          disabled={!activeWallet}
-                          onClick={() => {
-                            setRouteCalldata({ buyCalldata: "", sellCalldata: "" });
-                            setConfirmOpportunity(opportunity);
-                          }}
-                          className="bg-cyan-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-                        >
-                          Execute
-                        </button>
+                  {opportunities.length === 0 ? (
+                    <tr>
+                      <td colSpan={13} className="border-t border-slate-800 py-4 text-center text-slate-400">
+                        No opportunities found in this scan.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    opportunities.map((opportunity) => (
+                      <tr key={opportunity.id} className="border-t border-slate-800 align-top">
+                        <td className="py-2 pr-2">{opportunity.pair}</td>
+                        <td className="py-2 pr-2">{opportunity.buyDex}</td>
+                        <td className="py-2 pr-2">{opportunity.sellDex}</td>
+                        <td className="py-2 pr-2">{formatUsd(opportunity.buyPrice)}</td>
+                        <td className="py-2 pr-2">{formatUsd(opportunity.sellPrice)}</td>
+                        <td className="py-2 pr-2 text-emerald-300">{formatPct(opportunity.spreadPct)}</td>
+                        <td className="py-2 pr-2">
+                          <p>{formatAsset(opportunity.loanAmount, opportunity.loanAsset)}</p>
+                          <p className="text-slate-400">{formatUsd(opportunity.loanAmountUsd)}</p>
+                        </td>
+                        <td className="py-2 pr-2">
+                          <p>{formatAsset(opportunity.grossProfitAsset, opportunity.loanAsset)}</p>
+                          <p className="text-slate-400">{formatUsd(opportunity.grossProfitUsd)}</p>
+                        </td>
+                        <td className="py-2 pr-2">
+                          <p className="text-emerald-300">{formatAsset(opportunity.netProfitAsset, opportunity.loanAsset)}</p>
+                          <p className="text-slate-400">{formatUsd(opportunity.netProfitUsd)}</p>
+                        </td>
+                        <td className="py-2 pr-2">{formatPct(opportunity.priceImpactPct)}</td>
+                        <td className="py-2 pr-2">{formatUsd(opportunity.pairLiquidityUsd)}</td>
+                        <td className="py-2 pr-2">
+                          <p>{formatAsset(opportunity.totalFeeAsset, opportunity.loanAsset)}</p>
+                          <p className="text-slate-400">{formatUsd(opportunity.totalFeeUsd)}</p>
+                        </td>
+                        <td className="py-2">
+                          <button
+                            disabled={!activeWallet}
+                            onClick={() => {
+                              autoGenerateCalldata(opportunity);
+                              setConfirmOpportunity(opportunity);
+                            }}
+                            className="bg-cyan-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                          >
+                            Execute
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -942,8 +1247,8 @@ export default function App() {
                 <p>Provider: {confirmOpportunity.provider}</p>
                 <p>Buy DEX: {confirmOpportunity.buyDex}</p>
                 <p>Sell DEX: {confirmOpportunity.sellDex}</p>
-                <p>Buy price: {confirmOpportunity.buyPrice.toFixed(8)}</p>
-                <p>Sell price: {confirmOpportunity.sellPrice.toFixed(8)}</p>
+                <p>Buy price: {formatUsd(confirmOpportunity.buyPrice)}</p>
+                <p>Sell price: {formatUsd(confirmOpportunity.sellPrice)}</p>
                 <p>Spread: {formatPct(confirmOpportunity.spreadPct)}</p>
                 <p>Price impact: {formatPct(confirmOpportunity.priceImpactPct)}</p>
                 <p>Pair liquidity: {formatUsd(confirmOpportunity.pairLiquidityUsd)}</p>
@@ -961,26 +1266,19 @@ export default function App() {
               </div>
 
               <div className="mt-3 space-y-2 text-sm">
-                <label className="block text-slate-300">Buy swap calldata (0x...)</label>
-                <textarea
-                  value={routeCalldata.buyCalldata}
-                  onChange={(event) => setRouteCalldata((current) => ({ ...current, buyCalldata: event.target.value.trim() }))}
-                  className="h-20 w-full border border-slate-700 bg-slate-950 p-2 text-xs"
-                  placeholder="Paste router calldata"
-                />
-                <label className="block text-slate-300">Sell swap calldata (0x...)</label>
-                <textarea
-                  value={routeCalldata.sellCalldata}
-                  onChange={(event) => setRouteCalldata((current) => ({ ...current, sellCalldata: event.target.value.trim() }))}
-                  className="h-20 w-full border border-slate-700 bg-slate-950 p-2 text-xs"
-                  placeholder="Paste router calldata"
-                />
-                <p className="text-xs text-amber-300">Calldata must match your deployed contract balance flow. Wrong payload can fail and still spend gas.</p>
+                <p className="text-slate-300">Buy swap calldata: {routeCalldata.loading ? "Generating..." : routeCalldata.buyCalldata ? `${routeCalldata.buyCalldata.slice(0, 16)}...${routeCalldata.buyCalldata.slice(-10)}` : "Not available"}</p>
+                <p className="text-slate-300">Sell swap calldata: {routeCalldata.loading ? "Generating..." : routeCalldata.sellCalldata ? `${routeCalldata.sellCalldata.slice(0, 16)}...${routeCalldata.sellCalldata.slice(-10)}` : "Not available"}</p>
+                <p className="text-xs text-slate-400">Router payloads are auto generated from selected DEX routes and token addresses.</p>
+                {routeCalldata.error && <p className="text-xs text-rose-300">{routeCalldata.error}</p>}
               </div>
 
               <div className="sticky bottom-0 mt-5 flex justify-end gap-2 border-t border-slate-800 bg-slate-900 pt-3">
                 <button onClick={() => setConfirmOpportunity(null)} className="bg-slate-700 px-4 py-2 text-sm hover:bg-slate-600">Cancel</button>
-                <button onClick={() => beginExecution(confirmOpportunity)} className="bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-300">
+                <button
+                  disabled={routeCalldata.loading || !routeCalldata.buyCalldata || !routeCalldata.sellCalldata}
+                  onClick={() => beginExecution(confirmOpportunity)}
+                  className="bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                >
                   Confirm Trade
                 </button>
               </div>
