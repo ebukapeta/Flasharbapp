@@ -18,5 +18,10 @@
     "network": "Solana Mainnet",
     "contractFile": "smart-contracts/solana/flash_arb_executor.rs",
     "programId": "ArbFlashMain8Jx3tP2V7nQ5fY9rL1kD4uE6wZ3c"
+  },
+  "ethereum": {
+    "network": "Ethereum Mainnet",
+    "contractFile": "smart-contracts/evm/ethereum/FlashArbitrageExecutorEthereum.sol",
+    "executorAddress": "0xB9dbf9185F6E6531372Ec64dBf17cb43A8F3D0C1"
   }
 }

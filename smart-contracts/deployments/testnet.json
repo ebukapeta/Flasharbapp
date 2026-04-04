@@ -18,5 +18,10 @@
     "network": "Solana Devnet",
     "contractFile": "smart-contracts/solana/flash_arb_executor.rs",
     "programId": "ArbFlash1nDk4hT6wVtestnet8s2Qj5C3iN9qF2k"
+  },
+  "ethereum": {
+    "network": "Ethereum Sepolia",
+    "contractFile": "smart-contracts/evm/ethereum/FlashArbitrageExecutorEthereum.sol",
+    "executorAddress": "0x8a650D1478fB36cA4A151e9Cee96A58931eA0A51"
   }
 }
