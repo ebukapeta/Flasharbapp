@@ -39,6 +39,20 @@ interface DexScreenerPair {
   quoteToken: { symbol: string; address: string };
 }
 
+interface JupiterQuoteResponse {
+  inputMint: string;
+  outputMint: string;
+  inAmount: string;
+  outAmount: string;
+  [key: string]: unknown;
+}
+
+interface JupiterSwapResponse {
+  swapTransaction?: string;
+  swapInstruction?: { data?: string };
+  error?: string;
+}
+
 interface ConnectedWallet {
   walletName: string;
   address: string;
@@ -408,6 +422,7 @@ const prettifyDexId = (rawDexId: string) =>
     .join(" ");
 const envRefresh = Number(import.meta.env.VITE_SCANNER_REFRESH_MS ?? "15000");
 const defaultEnv = (import.meta.env.VITE_DEFAULT_ENV ?? "testnet") as EnvMode;
+const jupiterApiBase = import.meta.env.VITE_JUPITER_API_BASE ?? "https://lite-api.jup.ag";
 
 const normalizeDexName = (networkKey: NetworkKey, rawDexId: string) => {
   const canonical = rawDexId.trim().toLowerCase();
@@ -477,6 +492,81 @@ async function fetchSearchPairs(chain: string, query: string): Promise<DexScreen
   const payload = (await response.json()) as { pairs?: DexScreenerPair[] };
   const pairs = Array.isArray(payload?.pairs) ? payload.pairs : [];
   return pairs.filter((pair) => pair.chainId?.toLowerCase() === chain.toLowerCase());
+}
+
+async function fetchJsonFromFallback(urls: string[], init?: RequestInit) {
+  let lastStatus: number | null = null;
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, init);
+      if (!response.ok) {
+        lastStatus = response.status;
+        continue;
+      }
+      return await response.json();
+    } catch {
+      // Continue through fallback endpoints.
+    }
+  }
+  throw new Error(`Route provider request failed${lastStatus ? ` with status ${lastStatus}` : ""}.`);
+}
+
+async function fetchJupiterQuote(inputMint: string, outputMint: string, amountRaw: string): Promise<JupiterQuoteResponse> {
+  const query = new URLSearchParams({
+    inputMint,
+    outputMint,
+    amount: amountRaw,
+    slippageBps: "50",
+    swapMode: "ExactIn",
+    onlyDirectRoutes: "false",
+  }).toString();
+
+  const payload = (await fetchJsonFromFallback([
+    `${jupiterApiBase}/swap/v1/quote?${query}`,
+    `https://quote-api.jup.ag/v6/quote?${query}`,
+  ])) as JupiterQuoteResponse;
+
+  if (!payload || typeof payload.outAmount !== "string" || !payload.outAmount) {
+    throw new Error("Jupiter quote response missing outAmount.");
+  }
+
+  return payload;
+}
+
+async function fetchJupiterSwapPayload(userPublicKey: string, quoteResponse: JupiterQuoteResponse): Promise<string> {
+  const body = JSON.stringify({
+    userPublicKey,
+    quoteResponse,
+    wrapAndUnwrapSol: true,
+    dynamicComputeUnitLimit: true,
+  });
+
+  const payload = (await fetchJsonFromFallback(
+    [
+      `${jupiterApiBase}/swap/v1/swap`,
+      "https://quote-api.jup.ag/v6/swap",
+      `${jupiterApiBase}/swap/v1/swap-instructions`,
+    ],
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    },
+  )) as JupiterSwapResponse;
+
+  if (typeof payload.error === "string" && payload.error) {
+    throw new Error(payload.error);
+  }
+
+  if (typeof payload.swapTransaction === "string" && payload.swapTransaction) {
+    return payload.swapTransaction;
+  }
+
+  if (typeof payload.swapInstruction?.data === "string" && payload.swapInstruction.data) {
+    return payload.swapInstruction.data;
+  }
+
+  throw new Error("Jupiter swap payload was empty.");
 }
 
 function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
@@ -905,36 +995,55 @@ export default function App() {
     return v2Interface.encodeFunctionData("swapExactTokensForTokens", [amountInRaw, 0, [tokenIn, tokenOut], recipient, deadline]);
   };
 
-  const autoGenerateCalldata = (opportunity: Opportunity) => {
-    if (activeNetwork.chainType !== "evm") {
-      setRouteCalldata({ buyCalldata: "", sellCalldata: "", loading: false, error: "Auto route generation is available on EVM networks in this release." });
-      return;
-    }
-
+  const autoGenerateCalldata = async (opportunity: Opportunity) => {
     setRouteCalldata({ buyCalldata: "", sellCalldata: "", loading: true, error: "" });
 
     try {
-      const contractAddress = sanitizeEvmAddress(activeNetwork.contractAddresses[environment]);
-      const loanAssetAddressRaw = activeRuntime.tokenAddresses[opportunity.loanAsset] ?? opportunity.loanAssetAddress;
-      const quoteAssetAddressRaw = activeRuntime.tokenAddresses[opportunity.quoteAsset] ?? opportunity.quoteAssetAddress;
+      if (activeNetwork.chainType === "evm") {
+        const contractAddress = sanitizeEvmAddress(activeNetwork.contractAddresses[environment]);
+        const loanAssetAddressRaw = activeRuntime.tokenAddresses[opportunity.loanAsset] ?? opportunity.loanAssetAddress;
+        const quoteAssetAddressRaw = activeRuntime.tokenAddresses[opportunity.quoteAsset] ?? opportunity.quoteAssetAddress;
 
-      if (!loanAssetAddressRaw || !quoteAssetAddressRaw || !loanAssetAddressRaw.startsWith("0x") || !quoteAssetAddressRaw.startsWith("0x")) {
-        throw new Error("Missing EVM token addresses for auto route generation.");
+        if (!loanAssetAddressRaw || !quoteAssetAddressRaw || !loanAssetAddressRaw.startsWith("0x") || !quoteAssetAddressRaw.startsWith("0x")) {
+          throw new Error("Missing EVM token addresses for auto route generation.");
+        }
+        const loanAssetAddress = sanitizeEvmAddress(loanAssetAddressRaw);
+        const quoteAssetAddress = sanitizeEvmAddress(quoteAssetAddressRaw);
+
+        const loanAssetDecimals = activeRuntime.tokenDecimals[opportunity.loanAsset] ?? 18;
+        const quoteAssetDecimals = activeRuntime.tokenDecimals[opportunity.quoteAsset] ?? 18;
+
+        const buyAmountRaw = parseUnits(opportunity.loanAmount.toFixed(Math.min(loanAssetDecimals, 6)), loanAssetDecimals);
+        const intermediateQuoteAmount = Math.max(opportunity.loanAmountUsd, 1) / Math.max(0.0000001, opportunity.sellPrice);
+        const sellAmountRaw = parseUnits(intermediateQuoteAmount.toFixed(Math.min(quoteAssetDecimals, 6)), quoteAssetDecimals);
+
+        const buyCalldata = buildSwapCalldata(opportunity.buyDex, loanAssetAddress, quoteAssetAddress, buyAmountRaw, contractAddress);
+        const sellCalldata = buildSwapCalldata(opportunity.sellDex, quoteAssetAddress, loanAssetAddress, sellAmountRaw, contractAddress);
+
+        setRouteCalldata({ buyCalldata, sellCalldata, loading: false, error: "" });
+        return;
       }
-      const loanAssetAddress = sanitizeEvmAddress(loanAssetAddressRaw);
-      const quoteAssetAddress = sanitizeEvmAddress(quoteAssetAddressRaw);
 
-      const loanAssetDecimals = activeRuntime.tokenDecimals[opportunity.loanAsset] ?? 18;
-      const quoteAssetDecimals = activeRuntime.tokenDecimals[opportunity.quoteAsset] ?? 18;
+      if (!activeWallet?.address) {
+        throw new Error("Connect a Solana wallet to auto generate route payloads.");
+      }
 
-      const buyAmountRaw = parseUnits(opportunity.loanAmount.toFixed(Math.min(loanAssetDecimals, 6)), loanAssetDecimals);
-      const intermediateQuoteAmount = Math.max(opportunity.loanAmountUsd, 1) / Math.max(0.0000001, opportunity.sellPrice);
-      const sellAmountRaw = parseUnits(intermediateQuoteAmount.toFixed(Math.min(quoteAssetDecimals, 6)), quoteAssetDecimals);
+      const loanAssetAddress = activeRuntime.tokenAddresses[opportunity.loanAsset] ?? opportunity.loanAssetAddress;
+      const quoteAssetAddress = activeRuntime.tokenAddresses[opportunity.quoteAsset] ?? opportunity.quoteAssetAddress;
+      if (!loanAssetAddress || !quoteAssetAddress) {
+        throw new Error("Missing Solana token mint addresses for auto route generation.");
+      }
 
-      const buyCalldata = buildSwapCalldata(opportunity.buyDex, loanAssetAddress, quoteAssetAddress, buyAmountRaw, contractAddress);
-      const sellCalldata = buildSwapCalldata(opportunity.sellDex, quoteAssetAddress, loanAssetAddress, sellAmountRaw, contractAddress);
+      const loanAssetDecimals = activeRuntime.tokenDecimals[opportunity.loanAsset] ?? 9;
+      const buyAmountRaw = parseUnits(opportunity.loanAmount.toFixed(Math.min(loanAssetDecimals, 6)), loanAssetDecimals).toString();
 
-      setRouteCalldata({ buyCalldata, sellCalldata, loading: false, error: "" });
+      const buyQuote = await fetchJupiterQuote(loanAssetAddress, quoteAssetAddress, buyAmountRaw);
+      const sellQuote = await fetchJupiterQuote(quoteAssetAddress, loanAssetAddress, buyQuote.outAmount);
+
+      const buyPayload = await fetchJupiterSwapPayload(activeWallet.address, buyQuote);
+      const sellPayload = await fetchJupiterSwapPayload(activeWallet.address, sellQuote);
+
+      setRouteCalldata({ buyCalldata: buyPayload, sellCalldata: sellPayload, loading: false, error: "" });
     } catch (error) {
       setRouteCalldata({
         buyCalldata: "",
