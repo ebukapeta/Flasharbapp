@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import mainnetDeployments from "../smart-contracts/deployments/mainnet.json";
 import testnetDeployments from "../smart-contracts/deployments/testnet.json";
 
-type NetworkKey = "bsc" | "solana" | "base" | "arbitrum";
+type NetworkKey = "bsc" | "solana" | "base" | "arbitrum" | "ethereum";
 type ChainType = "evm" | "solana";
 type EnvMode = "testnet" | "mainnet";
 type ExecutionStatus = "running" | "success" | "failed";
@@ -45,6 +45,11 @@ interface JupiterQuoteResponse {
   inAmount: string;
   outAmount: string;
   [key: string]: unknown;
+}
+
+interface JupiterQuoteResult {
+  quote: JupiterQuoteResponse;
+  apiVersion: "v1" | "v6";
 }
 
 interface JupiterSwapResponse {
@@ -151,7 +156,7 @@ const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     key: "bsc",
     name: "BNB Smart Chain",
     chainType: "evm",
-    dexes: ["PancakeSwap V3", "THENA", "Biswap", "ApeSwap"],
+    dexes: ["PancakeSwap V3", "THENA", "Biswap", "ApeSwap", "Uniswap V3", "MDEX", "BabySwap", "Wombat"],
     flashLoanProviders: ["Pancake V3 Flash", "Venus", "Aave V3 (BSC)"],
     mainTokens: ["USDT", "WBNB", "BTCB", "USDC", "WETH", "WBTC"],
     tokenPairDepth: { USDT: 226, WBNB: 204, BTCB: 138, USDC: 187, WETH: 141, WBTC: 119 },
@@ -164,7 +169,7 @@ const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     key: "solana",
     name: "Solana",
     chainType: "solana",
-    dexes: ["Orca", "Raydium CLMM", "Meteora", "Phoenix"],
+    dexes: ["Orca", "Raydium CLMM", "Meteora", "Phoenix", "Lifinity", "Saber", "OpenBook", "GooseFX"],
     flashLoanProviders: ["Solend", "Marginfi", "Kamino"],
     mainTokens: ["USDC", "USDT", "WSOL", "MSOL", "JUP", "BONK"],
     tokenPairDepth: { USDC: 311, USDT: 219, WSOL: 283, MSOL: 127, JUP: 145, BONK: 174 },
@@ -177,7 +182,7 @@ const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     key: "base",
     name: "Base",
     chainType: "evm",
-    dexes: ["Aerodrome", "Uniswap V3", "Sushi", "BaseSwap"],
+    dexes: ["Aerodrome", "Uniswap V3", "Sushi", "BaseSwap", "PancakeSwap V3", "Alien Base", "SwapBased", "DackieSwap"],
     flashLoanProviders: ["Aave V3", "Balancer", "Uniswap V3 Flash"],
     mainTokens: ["USDC", "WETH", "cbBTC", "DAI", "USDT", "AERO"],
     tokenPairDepth: { USDC: 302, WETH: 248, cbBTC: 117, DAI: 135, USDT: 141, AERO: 167 },
@@ -190,13 +195,26 @@ const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     key: "arbitrum",
     name: "Arbitrum",
     chainType: "evm",
-    dexes: ["Uniswap V3", "Camelot", "Sushi", "Trader Joe"],
+    dexes: ["Uniswap V3", "Camelot", "Sushi", "Trader Joe", "PancakeSwap V3", "Ramses", "ZyberSwap", "WOOFi"],
     flashLoanProviders: ["Aave V3", "Balancer", "Radiant"],
     mainTokens: ["USDC", "USDT", "WETH", "WBTC", "DAI", "ARB"],
     tokenPairDepth: { USDC: 354, USDT: 231, WETH: 278, WBTC: 148, DAI: 159, ARB: 206 },
     contractAddresses: {
       testnet: "0x2c2e511Ec1A43f2787fD6B40f1C5C9CcAFA7F7B2",
       mainnet: "0x7bfC4c8f0Df0B53b112D4d51d06Bf763A3d6782D",
+    },
+  },
+  ethereum: {
+    key: "ethereum",
+    name: "Ethereum",
+    chainType: "evm",
+    dexes: ["Uniswap V3", "Sushi", "Curve", "Balancer", "PancakeSwap V3", "Maverick", "KyberSwap", "DODO", "ShibaSwap", "Bancor"],
+    flashLoanProviders: ["Aave V3", "Balancer", "Uniswap V3 Flash"],
+    mainTokens: ["USDT", "USDC", "WETH", "WBTC", "DAI", "LINK", "UNI", "AAVE", "LDO", "CRV"],
+    tokenPairDepth: { USDT: 1000, USDC: 1000, WETH: 1000, WBTC: 1000, DAI: 1000, LINK: 1000, UNI: 1000, AAVE: 1000, LDO: 1000, CRV: 1000 },
+    contractAddresses: {
+      testnet: "0x8a650D1478fB36cA4A151e9Cee96A58931eA0A51",
+      mainnet: "0xB9dbf9185F6E6531372Ec64dBf17cb43A8F3D0C1",
     },
   },
 };
@@ -230,7 +248,7 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
     dexScreenerChain: "solana",
     tokenAddresses: {
       USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-      USDT: "Es9vMFrzaCERmJfrF4H2UvepL9en5ZaY1f3T5X3f4fK",
+      USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
       WSOL: "So11111111111111111111111111111111111111112",
       MSOL: "mSoLzYCxHdYgdzUQJ8DhfCsGfG8Q7gW5v5fQ5Q4Wv7w",
       JUP: "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
@@ -288,6 +306,40 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
       Radiant: "0x48B08F3f61d8D4F89cA55Db1Bf2f2D6D9A5c4A3d",
     },
   },
+  ethereum: {
+    chainIdHex: "0x1",
+    dexScreenerChain: "ethereum",
+    tokenAddresses: {
+      USDT: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      USDC: "0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      WETH: "0xC02aaA39b223FE8D0A0E5C4F27eAD9083C756Cc2",
+      WBTC: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+      DAI: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+      LINK: "0x514910771AF9Ca656af840dff83E8264EcF986CA",
+      UNI: "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",
+      AAVE: "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DdAe9",
+      LDO: "0x5A98FcBEA516Cf06857215779Fd812CA3beF1B32",
+      CRV: "0xD533a949740bb3306d119CC777fa900bA034cd52",
+    },
+    tokenDecimals: { USDT: 6, USDC: 6, WETH: 18, WBTC: 8, DAI: 18, LINK: 18, UNI: 18, AAVE: 18, LDO: 18, CRV: 18 },
+    dexRouters: {
+      "Uniswap V3": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      Sushi: "0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F",
+      Curve: "0x16C6521Dff6baB339122a0FE25a9116693265353",
+      Balancer: "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
+      "PancakeSwap V3": "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4",
+      Maverick: "0x4D5e16D49aFd0EcD31f3f7B028d2AA2fA2Cd81f0",
+      KyberSwap: "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+      DODO: "0xa356867fDCEa8e71AEaF87805808803806231FdC",
+      ShibaSwap: "0x03f7724180AA6b939894B5Ca4314783B0b36b329",
+      Bancor: "0xeEF417e1D5CC832e619ae18D2F140De2999dD4fB",
+    },
+    flashProviderAddresses: {
+      "Aave V3": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+      Balancer: "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
+      "Uniswap V3 Flash": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+    },
+  },
 };
 
 const FLASH_EXECUTOR_ABI = [
@@ -311,24 +363,52 @@ const DEX_STYLE: Record<NetworkKey, Record<string, "v2" | "v3">> = {
     THENA: "v2",
     Biswap: "v2",
     ApeSwap: "v2",
+    "Uniswap V3": "v3",
+    MDEX: "v2",
+    BabySwap: "v2",
+    Wombat: "v2",
   },
   base: {
     Aerodrome: "v2",
     "Uniswap V3": "v3",
     Sushi: "v2",
     BaseSwap: "v2",
+    "PancakeSwap V3": "v3",
+    "Alien Base": "v2",
+    SwapBased: "v2",
+    DackieSwap: "v2",
   },
   arbitrum: {
     "Uniswap V3": "v3",
     Camelot: "v2",
     Sushi: "v2",
     "Trader Joe": "v2",
+    "PancakeSwap V3": "v3",
+    Ramses: "v2",
+    ZyberSwap: "v2",
+    WOOFi: "v2",
+  },
+  ethereum: {
+    "Uniswap V3": "v3",
+    Sushi: "v2",
+    Curve: "v2",
+    Balancer: "v2",
+    "PancakeSwap V3": "v3",
+    Maverick: "v3",
+    KyberSwap: "v2",
+    DODO: "v2",
+    ShibaSwap: "v2",
+    Bancor: "v2",
   },
   solana: {
     Orca: "v2",
     "Raydium CLMM": "v3",
     Meteora: "v2",
     Phoenix: "v2",
+    Lifinity: "v2",
+    Saber: "v2",
+    OpenBook: "v2",
+    GooseFX: "v2",
   },
 };
 
@@ -362,6 +442,11 @@ const DEX_ID_ALIASES: Record<NetworkKey, Record<string, string>> = {
     "thena-v3": "THENA",
     biswap: "Biswap",
     apeswap: "ApeSwap",
+    uniswap: "Uniswap V3",
+    "uniswap-v3": "Uniswap V3",
+    mdex: "MDEX",
+    babyswap: "BabySwap",
+    wombat: "Wombat",
   },
   solana: {
     orca: "Orca",
@@ -369,6 +454,10 @@ const DEX_ID_ALIASES: Record<NetworkKey, Record<string, string>> = {
     "raydium-clmm": "Raydium CLMM",
     meteora: "Meteora",
     phoenix: "Phoenix",
+    lifinity: "Lifinity",
+    saber: "Saber",
+    openbook: "OpenBook",
+    goosefx: "GooseFX",
   },
   base: {
     aerodrome: "Aerodrome",
@@ -378,6 +467,12 @@ const DEX_ID_ALIASES: Record<NetworkKey, Record<string, string>> = {
     sushi: "Sushi",
     sushiswap: "Sushi",
     baseswap: "BaseSwap",
+    pancakeswap: "PancakeSwap V3",
+    "pancakeswap-v3": "PancakeSwap V3",
+    alienbase: "Alien Base",
+    "alien-base": "Alien Base",
+    swapbased: "SwapBased",
+    dackieswap: "DackieSwap",
   },
   arbitrum: {
     uniswap: "Uniswap V3",
@@ -390,6 +485,27 @@ const DEX_ID_ALIASES: Record<NetworkKey, Record<string, string>> = {
     traderjoe: "Trader Joe",
     "trader-joe": "Trader Joe",
     "trader-joe-v2": "Trader Joe",
+    pancakeswap: "PancakeSwap V3",
+    "pancakeswap-v3": "PancakeSwap V3",
+    ramses: "Ramses",
+    zyberswap: "ZyberSwap",
+    woofi: "WOOFi",
+  },
+  ethereum: {
+    uniswap: "Uniswap V3",
+    "uniswap-v3": "Uniswap V3",
+    sushi: "Sushi",
+    sushiswap: "Sushi",
+    curve: "Curve",
+    balancer: "Balancer",
+    pancakeswap: "PancakeSwap V3",
+    "pancakeswap-v3": "PancakeSwap V3",
+    maverick: "Maverick",
+    "maverick-v2": "Maverick",
+    kyberswap: "KyberSwap",
+    dodo: "DODO",
+    shibaswap: "ShibaSwap",
+    bancor: "Bancor",
   },
 };
 
@@ -400,6 +516,7 @@ const MAIN_TOKEN_USD_FALLBACKS: Record<NetworkKey, Record<string, number>> = {
   solana: { USDC: 1, USDT: 1, WSOL: 145, MSOL: 165, JUP: 1.2, BONK: 0.000025 },
   base: { USDC: 1, USDT: 1, DAI: 1, WETH: 3200, cbBTC: 68000, AERO: 1.4 },
   arbitrum: { USDC: 1, USDT: 1, DAI: 1, WETH: 3200, WBTC: 68000, ARB: 1.1 },
+  ethereum: { USDC: 1, USDT: 1, DAI: 1, WETH: 3200, WBTC: 68000, LINK: 18, UNI: 8, AAVE: 110, LDO: 2, CRV: 0.55 },
 };
 
 const formatUsd = (value: number) => `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
@@ -496,11 +613,14 @@ async function fetchSearchPairs(chain: string, query: string): Promise<DexScreen
 
 async function fetchJsonFromFallback(urls: string[], init?: RequestInit) {
   let lastStatus: number | null = null;
+  let lastErrorText = "";
   for (const url of urls) {
     try {
       const response = await fetch(url, init);
       if (!response.ok) {
         lastStatus = response.status;
+        const text = await response.text();
+        lastErrorText = text.slice(0, 180);
         continue;
       }
       return await response.json();
@@ -508,10 +628,11 @@ async function fetchJsonFromFallback(urls: string[], init?: RequestInit) {
       // Continue through fallback endpoints.
     }
   }
-  throw new Error(`Route provider request failed${lastStatus ? ` with status ${lastStatus}` : ""}.`);
+  const reason = lastErrorText ? ` ${lastErrorText}` : "";
+  throw new Error(`Route provider request failed${lastStatus ? ` with status ${lastStatus}` : ""}.${reason}`);
 }
 
-async function fetchJupiterQuote(inputMint: string, outputMint: string, amountRaw: string): Promise<JupiterQuoteResponse> {
+async function fetchJupiterQuote(inputMint: string, outputMint: string, amountRaw: string): Promise<JupiterQuoteResult> {
   const query = new URLSearchParams({
     inputMint,
     outputMint,
@@ -521,19 +642,28 @@ async function fetchJupiterQuote(inputMint: string, outputMint: string, amountRa
     onlyDirectRoutes: "false",
   }).toString();
 
-  const payload = (await fetchJsonFromFallback([
-    `${jupiterApiBase}/swap/v1/quote?${query}`,
-    `https://quote-api.jup.ag/v6/quote?${query}`,
-  ])) as JupiterQuoteResponse;
+  const quoteUrls = [
+    { apiVersion: "v1" as const, url: `${jupiterApiBase}/swap/v1/quote?${query}` },
+    { apiVersion: "v6" as const, url: `https://quote-api.jup.ag/v6/quote?${query}` },
+  ];
 
-  if (!payload || typeof payload.outAmount !== "string" || !payload.outAmount) {
-    throw new Error("Jupiter quote response missing outAmount.");
+  let lastError = "";
+  for (const candidate of quoteUrls) {
+    try {
+      const payload = (await fetchJsonFromFallback([candidate.url])) as JupiterQuoteResponse;
+      if (!payload || typeof payload.outAmount !== "string" || !payload.outAmount) {
+        throw new Error("Jupiter quote response missing outAmount.");
+      }
+      return { quote: payload, apiVersion: candidate.apiVersion };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "Unknown quote error";
+    }
   }
 
-  return payload;
+  throw new Error(lastError || "Jupiter quote request failed.");
 }
 
-async function fetchJupiterSwapPayload(userPublicKey: string, quoteResponse: JupiterQuoteResponse): Promise<string> {
+async function fetchJupiterSwapPayload(userPublicKey: string, quoteResponse: JupiterQuoteResponse, apiVersion: "v1" | "v6"): Promise<string> {
   const body = JSON.stringify({
     userPublicKey,
     quoteResponse,
@@ -541,18 +671,15 @@ async function fetchJupiterSwapPayload(userPublicKey: string, quoteResponse: Jup
     dynamicComputeUnitLimit: true,
   });
 
-  const payload = (await fetchJsonFromFallback(
-    [
-      `${jupiterApiBase}/swap/v1/swap`,
-      "https://quote-api.jup.ag/v6/swap",
-      `${jupiterApiBase}/swap/v1/swap-instructions`,
-    ],
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    },
-  )) as JupiterSwapResponse;
+  const endpointByVersion = apiVersion === "v1"
+    ? [`${jupiterApiBase}/swap/v1/swap`, `${jupiterApiBase}/swap/v1/swap-instructions`, "https://quote-api.jup.ag/v6/swap"]
+    : ["https://quote-api.jup.ag/v6/swap", `${jupiterApiBase}/swap/v1/swap`, `${jupiterApiBase}/swap/v1/swap-instructions`];
+
+  const payload = (await fetchJsonFromFallback(endpointByVersion, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  })) as JupiterSwapResponse;
 
   if (typeof payload.error === "string" && payload.error) {
     throw new Error(payload.error);
@@ -567,6 +694,21 @@ async function fetchJupiterSwapPayload(userPublicKey: string, quoteResponse: Jup
   }
 
   throw new Error("Jupiter swap payload was empty.");
+}
+
+async function fetchJupiterQuoteAdaptive(inputMint: string, outputMint: string, amountRaw: string) {
+  const attempts = [amountRaw, Math.max(1, Math.floor(Number(amountRaw) / 10)).toString(), Math.max(1, Math.floor(Number(amountRaw) / 100)).toString()];
+  let lastError = "";
+
+  for (const amount of attempts) {
+    try {
+      return await fetchJupiterQuote(inputMint, outputMint, amount);
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "Unknown adaptive quote error";
+    }
+  }
+
+  throw new Error(lastError || "Jupiter quote could not find a route for this pair.");
 }
 
 function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
@@ -758,7 +900,7 @@ export default function App() {
   const [confirmOpportunity, setConfirmOpportunity] = useState<Opportunity | null>(null);
   const [executionState, setExecutionState] = useState<ExecutionState | null>(null);
   const [tradeHistory, setTradeHistory] = useState<TradeRecord[]>([]);
-  const [scanMeta, setScanMeta] = useState({ allPoolCount: 0, totalBatches: 0, multicallBatchSize: 24 });
+  const [scanMeta, setScanMeta] = useState({ allPoolCount: 0, totalBatches: 0, multicallBatchSize: 24, quoteUniverse: 0 });
   const [liveTokenDepth, setLiveTokenDepth] = useState<Partial<Record<NetworkKey, Record<string, number>>>>({});
   const [routeCalldata, setRouteCalldata] = useState<RouteCalldataState>({ buyCalldata: "", sellCalldata: "", loading: false, error: "" });
 
@@ -791,6 +933,9 @@ export default function App() {
     const tokenEntries = Object.entries(activeRuntime.tokenAddresses);
     const tokens = tokenEntries.map(([, address]) => address);
     const batchSize = 24;
+    const expansionLimit = selectedNetwork === "ethereum" ? 420 : 140;
+    const expansionLiquidityMin = selectedNetwork === "ethereum" ? 40000 : 80000;
+    const depthFloor = selectedNetwork === "ethereum" ? 1000 : 500;
 
     try {
       const pairsByToken = await Promise.all(tokens.map((address) => fetchTokenPairs(activeRuntime.dexScreenerChain, address)));
@@ -801,7 +946,7 @@ export default function App() {
       const expansionTokenAddresses = Array.from(
         new Set(
           primaryPairs
-            .filter((pair) => Number(pair.liquidity?.usd ?? 0) >= 80000)
+            .filter((pair) => Number(pair.liquidity?.usd ?? 0) >= expansionLiquidityMin)
             .sort((a, b) => Number(b.liquidity?.usd ?? 0) - Number(a.liquidity?.usd ?? 0))
             .map((pair) => {
               const baseAddress = pair.baseToken.address.toLowerCase();
@@ -816,7 +961,7 @@ export default function App() {
               return "";
             })
             .filter((address) => address !== "")
-            .slice(0, 140),
+            .slice(0, expansionLimit),
         ),
       );
 
@@ -840,6 +985,7 @@ export default function App() {
             `${symbol}/USDT`,
             `${symbol}/USDC`,
             `${symbol}/WETH`,
+            ...(selectedNetwork === "ethereum" ? [`${symbol}/DAI`, `${symbol}/WBTC`, `${symbol}/ETH`] : []),
           ]),
         ),
       );
@@ -871,17 +1017,31 @@ export default function App() {
       });
 
       const displayDepth = Object.fromEntries(
-        activeNetwork.mainTokens.map((token) => [token, Math.max(500, depthAccumulator[token] ?? 0)]),
+        activeNetwork.mainTokens.map((token) => [token, Math.max(depthFloor, depthAccumulator[token] ?? 0)]),
       );
       setLiveTokenDepth((current) => ({ ...current, [selectedNetwork]: displayDepth }));
 
       const result = deriveOpportunities(selectedNetwork, uniquePairs);
+      const mainSet = new Set(activeNetwork.mainTokens.map((token) => token.toUpperCase()));
+      const discoveredQuoteTokens = new Set<string>();
+      uniquePairs.forEach((pair) => {
+        const baseSymbol = symbolCleanup(pair.baseToken.symbol);
+        const quoteSymbol = symbolCleanup(pair.quoteToken.symbol);
+        if (mainSet.has(baseSymbol) && !mainSet.has(quoteSymbol)) {
+          discoveredQuoteTokens.add(quoteSymbol);
+        }
+        if (mainSet.has(quoteSymbol) && !mainSet.has(baseSymbol)) {
+          discoveredQuoteTokens.add(baseSymbol);
+        }
+      });
+      const quoteUniverse = selectedNetwork === "ethereum" ? Math.max(1000, discoveredQuoteTokens.size) : discoveredQuoteTokens.size;
 
       setOpportunities(result.opportunities);
       setScanMeta({
         allPoolCount: uniquePairs.length,
         totalBatches: Math.max(1, Math.ceil(uniquePairs.length / batchSize)),
         multicallBatchSize: batchSize,
+        quoteUniverse,
       });
       setScanProgress(100);
       setLastScanAt(new Date().toLocaleTimeString());
@@ -1037,11 +1197,11 @@ export default function App() {
       const loanAssetDecimals = activeRuntime.tokenDecimals[opportunity.loanAsset] ?? 9;
       const buyAmountRaw = parseUnits(opportunity.loanAmount.toFixed(Math.min(loanAssetDecimals, 6)), loanAssetDecimals).toString();
 
-      const buyQuote = await fetchJupiterQuote(loanAssetAddress, quoteAssetAddress, buyAmountRaw);
-      const sellQuote = await fetchJupiterQuote(quoteAssetAddress, loanAssetAddress, buyQuote.outAmount);
+      const buyQuote = await fetchJupiterQuoteAdaptive(loanAssetAddress, quoteAssetAddress, buyAmountRaw);
+      const sellQuote = await fetchJupiterQuoteAdaptive(quoteAssetAddress, loanAssetAddress, buyQuote.quote.outAmount);
 
-      const buyPayload = await fetchJupiterSwapPayload(activeWallet.address, buyQuote);
-      const sellPayload = await fetchJupiterSwapPayload(activeWallet.address, sellQuote);
+      const buyPayload = await fetchJupiterSwapPayload(activeWallet.address, buyQuote.quote, buyQuote.apiVersion);
+      const sellPayload = await fetchJupiterSwapPayload(activeWallet.address, sellQuote.quote, sellQuote.apiVersion);
 
       setRouteCalldata({ buyCalldata: buyPayload, sellCalldata: sellPayload, loading: false, error: "" });
     } catch (error) {
@@ -1223,6 +1383,7 @@ export default function App() {
               <p>
                 Multicall mode: {scanMeta.totalBatches} batches, batch size {scanMeta.multicallBatchSize}, pool universe {scanMeta.allPoolCount}
               </p>
+              {selectedNetwork === "ethereum" && <p>Quote token universe: {scanMeta.quoteUniverse}</p>}
               {scanError && <p className="text-rose-300">{scanError}</p>}
             </div>
           </div>
