@@ -21,7 +21,7 @@ interface NetworkConfig {
 }
 
 interface RuntimeChainConfig {
-  chainIdHex?: string;
+  chainIds?: { testnet: string; mainnet: string };
   dexScreenerChain: string;
   tokenAddresses: Record<string, string>;
   tokenDecimals: Record<string, number>;
@@ -104,6 +104,7 @@ interface TradeRecord {
   pair: string;
   buyDex: string;
   sellDex: string;
+  provider: string;
   buyPrice: number;
   sellPrice: number;
   totalFeeAsset: number;
@@ -221,7 +222,7 @@ const NETWORKS: Record<NetworkKey, NetworkConfig> = {
 
 const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
   bsc: {
-    chainIdHex: "0x38",
+    chainIds: { testnet: "0x61", mainnet: "0x38" },
     dexScreenerChain: "bsc",
     tokenAddresses: {
       USDT: "0x55d398326f99059fF775485246999027B3197955",
@@ -259,7 +260,7 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
     flashProviderAddresses: {},
   },
   base: {
-    chainIdHex: "0x2105",
+    chainIds: { testnet: "0x14a34", mainnet: "0x2105" },
     dexScreenerChain: "base",
     tokenAddresses: {
       USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
@@ -283,7 +284,7 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
     },
   },
   arbitrum: {
-    chainIdHex: "0xa4b1",
+    chainIds: { testnet: "0x66eee", mainnet: "0xa4b1" },
     dexScreenerChain: "arbitrum",
     tokenAddresses: {
       USDC: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
@@ -307,7 +308,7 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
     },
   },
   ethereum: {
-    chainIdHex: "0x1",
+    chainIds: { testnet: "0xaa36a7", mainnet: "0x1" },
     dexScreenerChain: "ethereum",
     tokenAddresses: {
       USDT: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
@@ -540,6 +541,7 @@ const prettifyDexId = (rawDexId: string) =>
 const envRefresh = Number(import.meta.env.VITE_SCANNER_REFRESH_MS ?? "15000");
 const defaultEnv = (import.meta.env.VITE_DEFAULT_ENV ?? "testnet") as EnvMode;
 const jupiterApiBase = import.meta.env.VITE_JUPITER_API_BASE ?? "https://lite-api.jup.ag";
+const getTargetEvmChainId = (network: NetworkKey, env: EnvMode) => RUNTIME[network].chainIds?.[env];
 
 const normalizeDexName = (networkKey: NetworkKey, rawDexId: string) => {
   const canonical = rawDexId.trim().toLowerCase();
@@ -1073,11 +1075,12 @@ export default function App() {
     if (!window.ethereum) {
       throw new Error("No EVM wallet detected in browser.");
     }
-    if (activeRuntime.chainIdHex) {
+    const targetChainId = getTargetEvmChainId(selectedNetwork, environment);
+    if (targetChainId) {
       try {
         await window.ethereum.request({
           method: "wallet_switchEthereumChain",
-          params: [{ chainId: activeRuntime.chainIdHex }],
+          params: [{ chainId: targetChainId }],
         });
       } catch {
         // Keep flow going; wallet might not support programmatic network switch.
@@ -1249,8 +1252,20 @@ export default function App() {
       const minProfit = parseUnits((opportunity.netProfitAsset * 0.5).toFixed(Math.min(tokenDecimals, 6)), tokenDecimals);
 
       setExecutionState((current) => (current ? { ...current, stepIndex: 2 } : current));
+      const targetChainId = getTargetEvmChainId(selectedNetwork, environment);
+      if (targetChainId) {
+        try {
+          await window.ethereum?.request({ method: "wallet_switchEthereumChain", params: [{ chainId: targetChainId }] });
+        } catch {
+          // Validation below provides a precise mismatch error if the switch did not happen.
+        }
+      }
       const signerProvider = new BrowserProvider(window.ethereum!);
       const signer = await signerProvider.getSigner();
+      const signerNetwork = await signerProvider.getNetwork();
+      if (targetChainId && signerNetwork.chainId !== BigInt(targetChainId)) {
+        throw new Error(`Wrong wallet network. Switch wallet to ${activeNetwork.name} ${environment} and retry.`);
+      }
       const deployedCode = await signerProvider.getCode(contractAddress);
       if (!deployedCode || deployedCode === "0x") {
         throw new Error(`No contract deployed at executor address ${contractAddress} on selected network.`);
@@ -1278,6 +1293,7 @@ export default function App() {
           pair: opportunity.pair,
           buyDex: opportunity.buyDex,
           sellDex: opportunity.sellDex,
+          provider: opportunity.provider,
           buyPrice: opportunity.buyPrice,
           sellPrice: opportunity.sellPrice,
           totalFeeAsset: opportunity.totalFeeAsset,
@@ -1586,7 +1602,9 @@ export default function App() {
                 <tr>
                   <th className="pb-2">Pair</th>
                   <th className="pb-2">Buy/Sell DEX</th>
-                  <th className="pb-2">Buy/Sell price</th>
+                  <th className="pb-2">Loan provider</th>
+                  <th className="pb-2">Buy price</th>
+                  <th className="pb-2">Sell price</th>
                   <th className="pb-2">Fee</th>
                   <th className="pb-2">Gross profit</th>
                   <th className="pb-2">Net profit</th>
@@ -1598,7 +1616,7 @@ export default function App() {
               <tbody>
                 {tradeHistory.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="border-t border-slate-800 py-4 text-center text-slate-400">
+                    <td colSpan={11} className="border-t border-slate-800 py-4 text-center text-slate-400">
                       No trades executed yet.
                     </td>
                   </tr>
@@ -1607,7 +1625,9 @@ export default function App() {
                     <tr key={trade.id} className="border-t border-slate-800">
                       <td className="py-2 pr-2">{trade.pair}</td>
                       <td className="py-2 pr-2">{trade.buyDex} / {trade.sellDex}</td>
-                      <td className="py-2 pr-2">{trade.buyPrice.toFixed(6)} / {trade.sellPrice.toFixed(6)}</td>
+                      <td className="py-2 pr-2">{trade.provider}</td>
+                      <td className="py-2 pr-2">{formatUsd(trade.buyPrice)}</td>
+                      <td className="py-2 pr-2">{formatUsd(trade.sellPrice)}</td>
                       <td className="py-2 pr-2">{formatAsset(trade.totalFeeAsset, trade.loanAsset)} ({formatUsd(trade.totalFeeUsd)})</td>
                       <td className="py-2 pr-2">{formatAsset(trade.grossProfitAsset, trade.loanAsset)} ({formatUsd(trade.grossProfitUsd)})</td>
                       <td className="py-2 pr-2">{formatAsset(trade.netProfitAsset, trade.loanAsset)} ({formatUsd(trade.netProfitUsd)})</td>
