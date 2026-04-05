@@ -31,6 +31,11 @@ interface RuntimeChainConfig {
   nativeTokenUsd: number;
 }
 
+interface RuntimeEnvOverride {
+  testnet?: Partial<RuntimeChainConfig>;
+  mainnet?: Partial<RuntimeChainConfig>;
+}
+
 interface DexScreenerPair {
   chainId: string;
   dexId: string;
@@ -350,12 +355,43 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
     },
     flashProviderAddresses: {
       "Aave V3": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
-      Balancer: "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
-      "Uniswap V3 Flash": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
     },
     nativeTokenSymbol: "ETH",
     nativeTokenUsd: 3200,
   },
+};
+
+const RUNTIME_ENV_OVERRIDES: Partial<Record<NetworkKey, RuntimeEnvOverride>> = {
+  ethereum: {
+    testnet: {
+      tokenAddresses: {
+        USDT: "0x148b1aB3e2321d79027C4b71B6118e70434B4784",
+        USDC: "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
+        WETH: "0xfff9976782d46cc05630d1f6ebab18b2324d6b14",
+        WBTC: "0x29f2d40b0605204364af54ec677bd022da425d03",
+        DAI: "0x68194a729C2450ad26072b3D33ADaCbcef39D574",
+        LINK: "0x779877A7B0D9E8603169DdbD7836e478b4624789",
+        UNI: "0x492E85cD024A271C4F19d8F4f2f9A4d6D8f0E2a6",
+        AAVE: "0x2Ff7B3db4f4A1A5855A84E8D4A0a4Bf54eA04F68",
+        LDO: "0x6f43ff82cca38001b6699a8ac47a2d0e66939407",
+        CRV: "0xA4efF3C6D06F2fE618f6a8bA94E8f6Ed0A1Df57F",
+      },
+      dexRouters: {
+        "Uniswap V3": "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
+      },
+      flashProviderAddresses: {
+        "Aave V3": "0x207ABAcEe3Be9EFEf87c600Dcd2C0511b659B050",
+      },
+    },
+  },
+};
+
+const GAS_ESTIMATE_CONFIG: Record<NetworkKey, { gasUnits: number; gwei: { testnet: number; mainnet: number } }> = {
+  bsc: { gasUnits: 950000, gwei: { testnet: 3, mainnet: 5 } },
+  solana: { gasUnits: 220000, gwei: { testnet: 0, mainnet: 0 } },
+  base: { gasUnits: 950000, gwei: { testnet: 0.03, mainnet: 0.06 } },
+  arbitrum: { gasUnits: 950000, gwei: { testnet: 0.03, mainnet: 0.06 } },
+  ethereum: { gasUnits: 950000, gwei: { testnet: 1.2, mainnet: 18 } },
 };
 
 const FLASH_EXECUTOR_ABI = [
@@ -731,7 +767,7 @@ async function fetchJupiterQuoteAdaptive(inputMint: string, outputMint: string, 
   throw new Error(lastError || "Jupiter quote could not find a route for this pair.");
 }
 
-function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
+function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[], providerPool: string[], allowedDexes: Set<string>) {
   const opportunities: Opportunity[] = [];
   const pairBuckets = new Map<
     string,
@@ -825,7 +861,9 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
     pairBuckets.set(key, bucket);
   });
 
-  const providerPool = NETWORKS[networkKey].flashLoanProviders;
+  if (providerPool.length === 0) {
+    return { opportunities: [], eligiblePoolCount: 0 };
+  }
   let batchCounter = 1;
 
   pairBuckets.forEach((bucket, pairKey) => {
@@ -837,6 +875,9 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
     const buy = sorted[0];
     const sell = sorted[sorted.length - 1];
     if (buy.dexName === sell.dexName) {
+      return;
+    }
+    if (allowedDexes.size > 0 && (!allowedDexes.has(buy.dexName) || !allowedDexes.has(sell.dexName))) {
       return;
     }
 
@@ -890,7 +931,7 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[]) {
       quoteAsset,
       loanAssetAddress: buy.loanAssetAddress,
       quoteAssetAddress: buy.quoteAssetAddress,
-      provider: providerPool[batchCounter % providerPool.length],
+      provider: providerPool[(batchCounter - 1) % providerPool.length],
       poolAddress: buy.pairAddress,
       multicallBatch: batchCounter,
     });
@@ -928,13 +969,36 @@ export default function App() {
   const progressTimeoutRef = useRef<number | null>(null);
 
   const activeNetwork = useMemo(() => NETWORKS[selectedNetwork], [selectedNetwork]);
-  const activeRuntime = useMemo(() => RUNTIME[selectedNetwork], [selectedNetwork]);
+  const activeRuntime = useMemo(() => {
+    const baseRuntime = RUNTIME[selectedNetwork];
+    const override = RUNTIME_ENV_OVERRIDES[selectedNetwork]?.[environment];
+    if (!override) {
+      return baseRuntime;
+    }
+
+    return {
+      ...baseRuntime,
+      ...override,
+      tokenAddresses: { ...baseRuntime.tokenAddresses, ...(override.tokenAddresses ?? {}) },
+      tokenDecimals: { ...baseRuntime.tokenDecimals, ...(override.tokenDecimals ?? {}) },
+      dexRouters: { ...baseRuntime.dexRouters, ...(override.dexRouters ?? {}) },
+      flashProviderAddresses: { ...baseRuntime.flashProviderAddresses, ...(override.flashProviderAddresses ?? {}) },
+    };
+  }, [selectedNetwork, environment]);
   const activeWallet = walletsByNetwork[selectedNetwork];
   const tokenDepthForNetwork = liveTokenDepth[selectedNetwork] ?? activeNetwork.tokenPairDepth;
   const activeTestnetDeploymentAddress = resolveDeploymentAddress(deploymentMap.testnet[selectedNetwork]);
   const activeMainnetDeploymentAddress = resolveDeploymentAddress(deploymentMap.mainnet[selectedNetwork]);
   const activeTestnetLinked = activeTestnetDeploymentAddress === activeNetwork.contractAddresses.testnet;
   const activeMainnetLinked = activeMainnetDeploymentAddress === activeNetwork.contractAddresses.mainnet;
+  const estimatedNetworkFee = useMemo(() => {
+    const config = GAS_ESTIMATE_CONFIG[selectedNetwork];
+    if (activeNetwork.chainType !== "evm") {
+      return { native: 0, usd: 0 };
+    }
+    const native = config.gasUnits * config.gwei[environment] * 1e-9;
+    return { native, usd: native * activeRuntime.nativeTokenUsd };
+  }, [activeNetwork.chainType, activeRuntime.nativeTokenUsd, environment, selectedNetwork]);
 
   const clearScanTimer = () => {
     if (scanIntervalRef.current) {
@@ -1041,7 +1105,17 @@ export default function App() {
       );
       setLiveTokenDepth((current) => ({ ...current, [selectedNetwork]: displayDepth }));
 
-      const result = deriveOpportunities(selectedNetwork, uniquePairs);
+      const availableProviders = Object.keys(activeRuntime.flashProviderAddresses);
+      const providerPool = activeNetwork.chainType === "evm"
+        ? availableProviders.filter((provider) => provider.toLowerCase().includes("aave"))
+        : availableProviders;
+      const resolvedProviderPool = providerPool.length > 0
+        ? providerPool
+        : availableProviders.length > 0
+          ? availableProviders
+          : activeNetwork.flashLoanProviders;
+      const allowedDexes = new Set(Object.keys(activeRuntime.dexRouters));
+      const result = deriveOpportunities(selectedNetwork, uniquePairs, resolvedProviderPool, allowedDexes);
       const mainSet = new Set(activeNetwork.mainTokens.map((token) => token.toUpperCase()));
       const discoveredQuoteTokens = new Set<string>();
       uniquePairs.forEach((pair) => {
@@ -1255,8 +1329,8 @@ export default function App() {
 
       const providerAddressRaw = activeRuntime.flashProviderAddresses[opportunity.provider];
       const loanAssetAddressRaw = activeRuntime.tokenAddresses[opportunity.loanAsset];
-      const buyDexRouterRaw = activeRuntime.dexRouters[opportunity.buyDex] ?? activeRuntime.dexRouters[activeNetwork.dexes[0]];
-      const sellDexRouterRaw = activeRuntime.dexRouters[opportunity.sellDex] ?? activeRuntime.dexRouters[activeNetwork.dexes[1]];
+      const buyDexRouterRaw = activeRuntime.dexRouters[opportunity.buyDex];
+      const sellDexRouterRaw = activeRuntime.dexRouters[opportunity.sellDex];
       if (!providerAddressRaw || !loanAssetAddressRaw || !buyDexRouterRaw || !sellDexRouterRaw) {
         throw new Error("Provider/router/token mapping missing for this opportunity.");
       }
@@ -1368,7 +1442,7 @@ export default function App() {
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : "Execution failed";
       const message = rawMessage.includes("require(false)")
-        ? "Route payload is incompatible with selected DEX router on this network. Verify testnet router/token/provider mappings and regenerate routes."
+        ? "Route payload is incompatible with selected DEX router/provider for this environment. Use matching testnet mappings (routers, loan provider, tokens) and regenerate routes."
         : rawMessage;
       setExecutionState((current) => (current ? { ...current, status: "failed", error: message } : current));
       setTradeHistory((history) => [
@@ -1769,7 +1843,8 @@ export default function App() {
                 <p>Pair liquidity: {formatUsd(confirmOpportunity.pairLiquidityUsd)}</p>
                 <p>Loan asset: {formatAsset(confirmOpportunity.loanAmount, confirmOpportunity.loanAsset)}</p>
                 <p>Loan value: {formatUsd(confirmOpportunity.loanAmountUsd)}</p>
-                <p>Total fee: {formatAsset(confirmOpportunity.totalFeeAsset, confirmOpportunity.loanAsset)}</p>
+                <p>Protocol fee: {formatAsset(confirmOpportunity.totalFeeAsset, confirmOpportunity.loanAsset)}</p>
+                <p>Estimated network fee: {estimatedNetworkFee.native.toLocaleString(undefined, { maximumFractionDigits: 6 })} {activeRuntime.nativeTokenSymbol}</p>
                 <p>Gross profit: {formatAsset(confirmOpportunity.grossProfitAsset, confirmOpportunity.loanAsset)}</p>
                 <p>Gross profit USD: {formatUsd(confirmOpportunity.grossProfitUsd)}</p>
                 <p>Net profit: {formatAsset(confirmOpportunity.netProfitAsset, confirmOpportunity.loanAsset)}</p>
@@ -1808,6 +1883,9 @@ export default function App() {
             <motion.div initial={{ y: 16, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 16, opacity: 0 }} className="w-full max-w-2xl border border-slate-700 bg-slate-900 p-5">
               <h3 className="text-lg font-semibold">Execution window</h3>
               <p className="mt-1 text-sm text-slate-300">{executionState.opportunity.pair} via {executionState.opportunity.provider}</p>
+              <p className="mt-1 text-xs text-slate-400">
+                Estimated network fee: {estimatedNetworkFee.native.toLocaleString(undefined, { maximumFractionDigits: 6 })} {activeRuntime.nativeTokenSymbol} ({formatUsd(estimatedNetworkFee.usd)})
+              </p>
               <div className="mt-4 space-y-2">
                 {executionSteps.map((step, index) => {
                   const isDone = index < executionState.stepIndex;
