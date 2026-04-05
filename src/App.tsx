@@ -345,6 +345,9 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
 
 const FLASH_EXECUTOR_ABI = [
   "function executeArbitrage(address provider, tuple(address loanAsset,uint256 loanAmount,uint256 minProfit,address buyDexRouter,address sellDexRouter,bytes buyCalldata,bytes sellCalldata) params) external",
+  "function approvedProvider(address provider) external view returns (bool)",
+  "function setProvider(address provider, bool approved) external",
+  "function owner() external view returns (address)",
 ];
 
 const V2_ROUTER_ABI = [
@@ -1220,6 +1223,7 @@ export default function App() {
   const beginExecution = async (opportunity: Opportunity) => {
     setConfirmOpportunity(null);
     setExecutionState({ opportunity, status: "running", stepIndex: 0 });
+    let submittedTxHash = "";
 
     try {
       if (activeNetwork.chainType !== "evm") {
@@ -1272,7 +1276,21 @@ export default function App() {
       }
       const contract = new Contract(contractAddress, FLASH_EXECUTOR_ABI, signer);
 
-      setExecutionState((current) => (current ? { ...current, stepIndex: 3 } : current));
+      const contractOwner = sanitizeEvmAddress(String(await contract.owner()));
+      const signerAddress = sanitizeEvmAddress(await signer.getAddress());
+      if (contractOwner !== signerAddress) {
+        throw new Error("Connected wallet is not contract owner. Connect with deployer wallet to execute/approve provider.");
+      }
+
+      const providerAllowed = Boolean(await contract.approvedProvider(providerAddress));
+      if (!providerAllowed) {
+        const approvalTx = await contract.setProvider(providerAddress, true);
+        setExecutionState((current) => (current ? { ...current, stepIndex: 3, txHash: approvalTx.hash } : current));
+        await approvalTx.wait();
+        // Return to signature step for the actual arbitrage transaction.
+        setExecutionState((current) => (current ? { ...current, stepIndex: 2, txHash: undefined } : current));
+      }
+
       const tx = await contract.executeArbitrage(providerAddress, {
         loanAsset: loanAssetAddress,
         loanAmount,
@@ -1282,7 +1300,10 @@ export default function App() {
         buyCalldata: routeCalldata.buyCalldata,
         sellCalldata: routeCalldata.sellCalldata,
       });
+      submittedTxHash = tx.hash;
 
+      setExecutionState((current) => (current ? { ...current, stepIndex: 3, txHash: tx.hash } : current));
+      await new Promise((resolve) => window.setTimeout(resolve, 120));
       setExecutionState((current) => (current ? { ...current, stepIndex: 4, txHash: tx.hash } : current));
       await tx.wait();
 
@@ -1312,6 +1333,28 @@ export default function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Execution failed";
       setExecutionState((current) => (current ? { ...current, status: "failed", error: message } : current));
+      setTradeHistory((history) => [
+        {
+          id: `${Date.now()}-failed`,
+          pair: opportunity.pair,
+          buyDex: opportunity.buyDex,
+          sellDex: opportunity.sellDex,
+          provider: opportunity.provider,
+          buyPrice: opportunity.buyPrice,
+          sellPrice: opportunity.sellPrice,
+          totalFeeAsset: opportunity.totalFeeAsset,
+          totalFeeUsd: opportunity.totalFeeUsd,
+          grossProfitAsset: opportunity.grossProfitAsset,
+          grossProfitUsd: opportunity.grossProfitUsd,
+          netProfitAsset: opportunity.netProfitAsset,
+          netProfitUsd: opportunity.netProfitUsd,
+          txHash: submittedTxHash || "0x0",
+          status: "failed",
+          loanAsset: opportunity.loanAsset,
+          executedAt: new Date().toLocaleString(),
+        },
+        ...history,
+      ]);
     }
   };
 
