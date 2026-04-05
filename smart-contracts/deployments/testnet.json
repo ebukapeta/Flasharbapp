@@ -22,6 +22,6 @@
   "ethereum": {
     "network": "Ethereum Sepolia",
     "contractFile": "smart-contracts/evm/ethereum/FlashArbitrageExecutorEthereum.sol",
-    "executorAddress": "0x8a650D1478fB36cA4A151e9Cee96A58931eA0A51"
+    "executorAddress": "0x7c1d471cb0ec491aa44e8e620d6541701b64536d"
   }
 }
