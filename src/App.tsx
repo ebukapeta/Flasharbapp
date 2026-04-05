@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { BrowserProvider, Contract, Interface, parseUnits } from "ethers";
+import { BrowserProvider, Contract, Interface, formatUnits, parseUnits } from "ethers";
 import { useEffect, useMemo, useRef, useState } from "react";
 import mainnetDeployments from "../smart-contracts/deployments/mainnet.json";
 import testnetDeployments from "../smart-contracts/deployments/testnet.json";
@@ -27,6 +27,8 @@ interface RuntimeChainConfig {
   tokenDecimals: Record<string, number>;
   dexRouters: Record<string, string>;
   flashProviderAddresses: Record<string, string>;
+  nativeTokenSymbol: string;
+  nativeTokenUsd: number;
 }
 
 interface DexScreenerPair {
@@ -109,6 +111,9 @@ interface TradeRecord {
   sellPrice: number;
   totalFeeAsset: number;
   totalFeeUsd: number;
+  gasFeeNative: number;
+  gasFeeUsd: number;
+  gasFeeSymbol: string;
   grossProfitAsset: number;
   grossProfitUsd: number;
   netProfitAsset: number;
@@ -244,6 +249,8 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
       Venus: "0xfD36E2c2a6789Db23113685031d7F16329158384",
       "Aave V3 (BSC)": "0x6807dc923806fE8Fd134338EABCA509979a7e0cB",
     },
+    nativeTokenSymbol: "BNB",
+    nativeTokenUsd: 600,
   },
   solana: {
     dexScreenerChain: "solana",
@@ -258,6 +265,8 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
     tokenDecimals: { USDC: 6, USDT: 6, WSOL: 9, MSOL: 9, JUP: 6, BONK: 5 },
     dexRouters: {},
     flashProviderAddresses: {},
+    nativeTokenSymbol: "SOL",
+    nativeTokenUsd: 145,
   },
   base: {
     chainIds: { testnet: "0x14a34", mainnet: "0x2105" },
@@ -282,6 +291,8 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
       Balancer: "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
       "Uniswap V3 Flash": "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
     },
+    nativeTokenSymbol: "ETH",
+    nativeTokenUsd: 3200,
   },
   arbitrum: {
     chainIds: { testnet: "0x66eee", mainnet: "0xa4b1" },
@@ -306,6 +317,8 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
       Balancer: "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
       Radiant: "0x48B08F3f61d8D4F89cA55Db1Bf2f2D6D9A5c4A3d",
     },
+    nativeTokenSymbol: "ETH",
+    nativeTokenUsd: 3200,
   },
   ethereum: {
     chainIds: { testnet: "0xaa36a7", mainnet: "0x1" },
@@ -340,6 +353,8 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
       Balancer: "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
       "Uniswap V3 Flash": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
     },
+    nativeTokenSymbol: "ETH",
+    nativeTokenUsd: 3200,
   },
 };
 
@@ -1270,10 +1285,22 @@ export default function App() {
       if (targetChainId && signerNetwork.chainId !== BigInt(targetChainId)) {
         throw new Error(`Wrong wallet network. Switch wallet to ${activeNetwork.name} ${environment} and retry.`);
       }
+
+      const ensureAddressHasCode = async (address: string, label: string) => {
+        const code = await signerProvider.getCode(address);
+        if (!code || code === "0x") {
+          throw new Error(`${label} is not deployed on selected ${activeNetwork.name} ${environment}: ${address}. Update runtime address mapping for this environment.`);
+        }
+      };
+
       const deployedCode = await signerProvider.getCode(contractAddress);
       if (!deployedCode || deployedCode === "0x") {
         throw new Error(`No contract deployed at executor address ${contractAddress} on selected network.`);
       }
+      await ensureAddressHasCode(providerAddress, "Flash loan provider");
+      await ensureAddressHasCode(buyDexRouter, "Buy DEX router");
+      await ensureAddressHasCode(sellDexRouter, "Sell DEX router");
+      await ensureAddressHasCode(loanAssetAddress, "Loan asset token");
       const contract = new Contract(contractAddress, FLASH_EXECUTOR_ABI, signer);
 
       const contractOwner = sanitizeEvmAddress(String(await contract.owner()));
@@ -1305,7 +1332,12 @@ export default function App() {
       setExecutionState((current) => (current ? { ...current, stepIndex: 3, txHash: tx.hash } : current));
       await new Promise((resolve) => window.setTimeout(resolve, 120));
       setExecutionState((current) => (current ? { ...current, stepIndex: 4, txHash: tx.hash } : current));
-      await tx.wait();
+      const receipt = await tx.wait();
+      const gasPrice = receipt?.gasPrice ?? tx.gasPrice ?? 0n;
+      const gasUsed = receipt?.gasUsed ?? 0n;
+      const gasFeeWei = gasUsed * gasPrice;
+      const gasFeeNative = Number(formatUnits(gasFeeWei, 18));
+      const gasFeeUsd = gasFeeNative * activeRuntime.nativeTokenUsd;
 
       setExecutionState((current) => (current ? { ...current, status: "success", txHash: tx.hash } : current));
       setTradeHistory((history) => [
@@ -1319,6 +1351,9 @@ export default function App() {
           sellPrice: opportunity.sellPrice,
           totalFeeAsset: opportunity.totalFeeAsset,
           totalFeeUsd: opportunity.totalFeeUsd,
+          gasFeeNative,
+          gasFeeUsd,
+          gasFeeSymbol: activeRuntime.nativeTokenSymbol,
           grossProfitAsset: opportunity.grossProfitAsset,
           grossProfitUsd: opportunity.grossProfitUsd,
           netProfitAsset: opportunity.netProfitAsset,
@@ -1331,7 +1366,10 @@ export default function App() {
         ...history,
       ]);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Execution failed";
+      const rawMessage = error instanceof Error ? error.message : "Execution failed";
+      const message = rawMessage.includes("require(false)")
+        ? "Route payload is incompatible with selected DEX router on this network. Verify testnet router/token/provider mappings and regenerate routes."
+        : rawMessage;
       setExecutionState((current) => (current ? { ...current, status: "failed", error: message } : current));
       setTradeHistory((history) => [
         {
@@ -1344,6 +1382,9 @@ export default function App() {
           sellPrice: opportunity.sellPrice,
           totalFeeAsset: opportunity.totalFeeAsset,
           totalFeeUsd: opportunity.totalFeeUsd,
+          gasFeeNative: 0,
+          gasFeeUsd: 0,
+          gasFeeSymbol: activeRuntime.nativeTokenSymbol,
           grossProfitAsset: opportunity.grossProfitAsset,
           grossProfitUsd: opportunity.grossProfitUsd,
           netProfitAsset: opportunity.netProfitAsset,
@@ -1648,7 +1689,7 @@ export default function App() {
                   <th className="pb-2">Loan provider</th>
                   <th className="pb-2">Buy price</th>
                   <th className="pb-2">Sell price</th>
-                  <th className="pb-2">Fee</th>
+                  <th className="pb-2">Gas fee (native)</th>
                   <th className="pb-2">Gross profit</th>
                   <th className="pb-2">Net profit</th>
                   <th className="pb-2">Hash</th>
@@ -1671,7 +1712,11 @@ export default function App() {
                       <td className="py-2 pr-2">{trade.provider}</td>
                       <td className="py-2 pr-2">{formatUsd(trade.buyPrice)}</td>
                       <td className="py-2 pr-2">{formatUsd(trade.sellPrice)}</td>
-                      <td className="py-2 pr-2">{formatAsset(trade.totalFeeAsset, trade.loanAsset)} ({formatUsd(trade.totalFeeUsd)})</td>
+                      <td className="py-2 pr-2">
+                        {trade.gasFeeNative > 0
+                          ? `${trade.gasFeeNative.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${trade.gasFeeSymbol} (${formatUsd(trade.gasFeeUsd)})`
+                          : `Not broadcast (${trade.gasFeeSymbol})`}
+                      </td>
                       <td className="py-2 pr-2">{formatAsset(trade.grossProfitAsset, trade.loanAsset)} ({formatUsd(trade.grossProfitUsd)})</td>
                       <td className="py-2 pr-2">{formatAsset(trade.netProfitAsset, trade.loanAsset)} ({formatUsd(trade.netProfitUsd)})</td>
                       <td className="py-2 pr-2 text-cyan-300">{shortAddress(trade.txHash)}</td>
