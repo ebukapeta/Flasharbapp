@@ -225,7 +225,7 @@ const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     // FIX #23: replaced hardcoded 1000 depth for every token with real estimated initial values
     tokenPairDepth: { USDT: 820, USDC: 910, WETH: 980, WBTC: 640, DAI: 510, LINK: 380, UNI: 290, AAVE: 260, LDO: 220, CRV: 310 },
     contractAddresses: {
-      testnet: "0x7c1d471cb0ec491aa44e8e620d6541701b64536d",
+      testnet: "0xebd4f7fa764ba2a99363bd89165f05d88eb24a9c",
       mainnet: "0xB9dbf9185F6E6531372Ec64dBf17cb43A8F3D0C1",
     },
   },
