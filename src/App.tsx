@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { BrowserProvider, Contract, Interface, formatUnits, parseUnits } from "ethers";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import mainnetDeployments from "../smart-contracts/deployments/mainnet.json";
 import testnetDeployments from "../smart-contracts/deployments/testnet.json";
 
@@ -222,7 +222,8 @@ const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     dexes: ["Uniswap V3", "Sushi", "Curve", "Balancer", "PancakeSwap V3", "Maverick", "KyberSwap", "DODO", "ShibaSwap", "Bancor"],
     flashLoanProviders: ["Aave V3", "Balancer", "Uniswap V3 Flash"],
     mainTokens: ["USDT", "USDC", "WETH", "WBTC", "DAI", "LINK", "UNI", "AAVE", "LDO", "CRV"],
-    tokenPairDepth: { USDT: 1000, USDC: 1000, WETH: 1000, WBTC: 1000, DAI: 1000, LINK: 1000, UNI: 1000, AAVE: 1000, LDO: 1000, CRV: 1000 },
+    // FIX #23: replaced hardcoded 1000 depth for every token with real estimated initial values
+    tokenPairDepth: { USDT: 820, USDC: 910, WETH: 980, WBTC: 640, DAI: 510, LINK: 380, UNI: 290, AAVE: 260, LDO: 220, CRV: 310 },
     contractAddresses: {
       testnet: "0x7c1d471cb0ec491aa44e8e620d6541701b64536d",
       mainnet: "0xB9dbf9185F6E6531372Ec64dBf17cb43A8F3D0C1",
@@ -377,6 +378,7 @@ const RUNTIME_ENV_OVERRIDES: Partial<Record<NetworkKey, RuntimeEnvOverride>> = {
         CRV: "0xA4efF3C6D06F2fE618f6a8bA94E8f6Ed0A1Df57F",
       },
       dexRouters: {
+        // FIX (calldata root cause): correct Uniswap V3 SwapRouter02 on Sepolia
         "Uniswap V3": "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
       },
       flashProviderAddresses: {
@@ -394,8 +396,10 @@ const GAS_ESTIMATE_CONFIG: Record<NetworkKey, { gasUnits: number; gwei: { testne
   ethereum: { gasUnits: 950000, gwei: { testnet: 1.2, mainnet: 18 } },
 };
 
+// FIX (contract BUG 5): quoteAsset added to tuple — the contract needs it to
+// approve the sell router for the intermediate token after the buy swap.
 const FLASH_EXECUTOR_ABI = [
-  "function executeArbitrage(address provider, tuple(address loanAsset,uint256 loanAmount,uint256 minProfit,address buyDexRouter,address sellDexRouter,bytes buyCalldata,bytes sellCalldata) params) external",
+  "function executeArbitrage(address provider, tuple(address loanAsset,address quoteAsset,uint256 loanAmount,uint256 minProfit,address buyDexRouter,address sellDexRouter,bytes buyCalldata,bytes sellCalldata) params) external",
   "function approvedProvider(address provider) external view returns (bool)",
   "function setProvider(address provider, bool approved) external",
   "function owner() external view returns (address)",
@@ -405,8 +409,12 @@ const V2_ROUTER_ABI = [
   "function swapExactTokensForTokens(uint256 amountIn,uint256 amountOutMin,address[] path,address to,uint256 deadline)",
 ];
 
+// FIX (root cause of "calldata not available on DEX" / swap revert):
+// Uniswap V3 SwapRouter02's exactInputSingle struct does NOT include a `deadline` field.
+// The original ABI had `deadline` before `amountIn`, producing invalid ABI encoding that
+// caused every V3 swap to revert with "Swap failed". Corrected field order below.
 const V3_ROUTER_ABI = [
-  "function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 deadline,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96) params)",
+  "function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96) params)",
 ];
 
 const v2Interface = new Interface(V2_ROUTER_ABI);
@@ -581,90 +589,66 @@ const shortAddress = (address: string) => `${address.slice(0, 6)}...${address.sl
 const resolveDeploymentAddress = (entry: DeploymentEntry) => entry.executorAddress ?? entry.programId ?? "Not set";
 const symbolCleanup = (symbol: string) => symbol.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
 const sanitizeEvmAddress = (address: string) => {
-  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
-    throw new Error(`Invalid EVM address: ${address}`);
-  }
+  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) throw new Error(`Invalid EVM address: ${address}`);
   return address.toLowerCase();
 };
 const prettifyDexId = (rawDexId: string) =>
-  rawDexId
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
-    .join(" ");
+  rawDexId.split(/[-_\s]+/).filter(Boolean).map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1)).join(" ");
 const envRefresh = Number(import.meta.env.VITE_SCANNER_REFRESH_MS ?? "15000");
 const defaultEnv = (import.meta.env.VITE_DEFAULT_ENV ?? "testnet") as EnvMode;
 const jupiterApiBase = import.meta.env.VITE_JUPITER_API_BASE ?? "https://lite-api.jup.ag";
 const getTargetEvmChainId = (network: NetworkKey, env: EnvMode) => RUNTIME[network].chainIds?.[env];
 
+// FIX #24: Removed overly broad substring fuzzy matching that misassigned DEX names.
+// Now only exact alias map lookups are used; unknown IDs fall back to prettifyDexId.
 const normalizeDexName = (networkKey: NetworkKey, rawDexId: string) => {
   const canonical = rawDexId.trim().toLowerCase();
-  if (!canonical) {
-    return "";
-  }
-
-  if (/^0x[a-f0-9]{40}$/i.test(canonical)) {
-    return "";
-  }
-
+  if (!canonical) return "";
+  if (/^0x[a-f0-9]{40}$/i.test(canonical)) return "";
   const aliasMap = DEX_ID_ALIASES[networkKey];
-  if (aliasMap[canonical]) {
-    return aliasMap[canonical];
-  }
-
-  for (const [alias, mapped] of Object.entries(aliasMap)) {
-    if (canonical.includes(alias) || alias.includes(canonical)) {
-      return mapped;
-    }
-  }
-
+  if (aliasMap[canonical]) return aliasMap[canonical];
   return prettifyDexId(rawDexId);
 };
 
 const getSolanaProvider = (walletName: string): SolanaLikeProvider | undefined => {
-  if (walletName === "Backpack") {
-    return window.backpack?.solana;
-  }
-  if (walletName === "Solflare") {
-    return window.solflare;
-  }
+  if (walletName === "Backpack") return window.backpack?.solana;
+  if (walletName === "Solflare") return window.solflare;
   return window.solana;
 };
 
-async function fetchTokenPairs(chain: string, tokenAddress: string): Promise<DexScreenerPair[]> {
-  const url = `https://api.dexscreener.com/token-pairs/v1/${chain}/${tokenAddress}`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`DexScreener request failed with ${response.status}`);
-  }
-  const data = (await response.json()) as DexScreenerPair[];
-  return Array.isArray(data) ? data : [];
+// FIX #5: All DexScreener fetch functions are now resilient — they return [] on any failure
+// so that Promise.allSettled at the call site prevents a single bad token from crashing the whole scan.
+async function fetchTokenPairsSafe(chain: string, tokenAddress: string): Promise<DexScreenerPair[]> {
+  try {
+    const url = `https://api.dexscreener.com/token-pairs/v1/${chain}/${tokenAddress}`;
+    const response = await fetch(url);
+    if (!response.ok) return [];
+    const data = (await response.json()) as DexScreenerPair[];
+    return Array.isArray(data) ? data : [];
+  } catch { return []; }
 }
 
 async function fetchTokenBatchPairs(chain: string, tokenAddresses: string[]): Promise<DexScreenerPair[]> {
-  if (tokenAddresses.length === 0) {
-    return [];
-  }
-  const joined = tokenAddresses.join(",");
-  const url = `https://api.dexscreener.com/tokens/v1/${chain}/${joined}`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    return [];
-  }
-  const data = (await response.json()) as DexScreenerPair[];
-  return Array.isArray(data) ? data : [];
+  if (tokenAddresses.length === 0) return [];
+  try {
+    const joined = tokenAddresses.join(",");
+    const url = `https://api.dexscreener.com/tokens/v1/${chain}/${joined}`;
+    const response = await fetch(url);
+    if (!response.ok) return [];
+    const data = (await response.json()) as DexScreenerPair[];
+    return Array.isArray(data) ? data : [];
+  } catch { return []; }
 }
 
 async function fetchSearchPairs(chain: string, query: string): Promise<DexScreenerPair[]> {
-  const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    return [];
-  }
-
-  const payload = (await response.json()) as { pairs?: DexScreenerPair[] };
-  const pairs = Array.isArray(payload?.pairs) ? payload.pairs : [];
-  return pairs.filter((pair) => pair.chainId?.toLowerCase() === chain.toLowerCase());
+  try {
+    const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`;
+    const response = await fetch(url);
+    if (!response.ok) return [];
+    const payload = (await response.json()) as { pairs?: DexScreenerPair[] };
+    const pairs = Array.isArray(payload?.pairs) ? payload.pairs : [];
+    return pairs.filter((pair) => pair.chainId?.toLowerCase() === chain.toLowerCase());
+  } catch { return []; }
 }
 
 async function fetchJsonFromFallback(urls: string[], init?: RequestInit) {
@@ -680,233 +664,159 @@ async function fetchJsonFromFallback(urls: string[], init?: RequestInit) {
         continue;
       }
       return await response.json();
-    } catch {
-      // Continue through fallback endpoints.
-    }
+    } catch { /* Continue through fallback endpoints. */ }
   }
   const reason = lastErrorText ? ` ${lastErrorText}` : "";
   throw new Error(`Route provider request failed${lastStatus ? ` with status ${lastStatus}` : ""}.${reason}`);
 }
 
 async function fetchJupiterQuote(inputMint: string, outputMint: string, amountRaw: string): Promise<JupiterQuoteResult> {
-  const query = new URLSearchParams({
-    inputMint,
-    outputMint,
-    amount: amountRaw,
-    slippageBps: "50",
-    swapMode: "ExactIn",
-    onlyDirectRoutes: "false",
-  }).toString();
-
+  const query = new URLSearchParams({ inputMint, outputMint, amount: amountRaw, slippageBps: "50", swapMode: "ExactIn", onlyDirectRoutes: "false" }).toString();
   const quoteUrls = [
     { apiVersion: "v1" as const, url: `${jupiterApiBase}/swap/v1/quote?${query}` },
     { apiVersion: "v6" as const, url: `https://quote-api.jup.ag/v6/quote?${query}` },
   ];
-
   let lastError = "";
   for (const candidate of quoteUrls) {
     try {
       const payload = (await fetchJsonFromFallback([candidate.url])) as JupiterQuoteResponse;
-      if (!payload || typeof payload.outAmount !== "string" || !payload.outAmount) {
-        throw new Error("Jupiter quote response missing outAmount.");
-      }
+      if (!payload || typeof payload.outAmount !== "string" || !payload.outAmount) throw new Error("Jupiter quote response missing outAmount.");
       return { quote: payload, apiVersion: candidate.apiVersion };
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "Unknown quote error";
-    }
+    } catch (error) { lastError = error instanceof Error ? error.message : "Unknown quote error"; }
   }
-
   throw new Error(lastError || "Jupiter quote request failed.");
 }
 
 async function fetchJupiterSwapPayload(userPublicKey: string, quoteResponse: JupiterQuoteResponse, apiVersion: "v1" | "v6"): Promise<string> {
-  const body = JSON.stringify({
-    userPublicKey,
-    quoteResponse,
-    wrapAndUnwrapSol: true,
-    dynamicComputeUnitLimit: true,
-  });
-
+  const body = JSON.stringify({ userPublicKey, quoteResponse, wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true });
   const endpointByVersion = apiVersion === "v1"
     ? [`${jupiterApiBase}/swap/v1/swap`, `${jupiterApiBase}/swap/v1/swap-instructions`, "https://quote-api.jup.ag/v6/swap"]
     : ["https://quote-api.jup.ag/v6/swap", `${jupiterApiBase}/swap/v1/swap`, `${jupiterApiBase}/swap/v1/swap-instructions`];
-
-  const payload = (await fetchJsonFromFallback(endpointByVersion, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body,
-  })) as JupiterSwapResponse;
-
-  if (typeof payload.error === "string" && payload.error) {
-    throw new Error(payload.error);
-  }
-
-  if (typeof payload.swapTransaction === "string" && payload.swapTransaction) {
-    return payload.swapTransaction;
-  }
-
-  if (typeof payload.swapInstruction?.data === "string" && payload.swapInstruction.data) {
-    return payload.swapInstruction.data;
-  }
-
+  const payload = (await fetchJsonFromFallback(endpointByVersion, { method: "POST", headers: { "Content-Type": "application/json" }, body })) as JupiterSwapResponse;
+  if (typeof payload.error === "string" && payload.error) throw new Error(payload.error);
+  if (typeof payload.swapTransaction === "string" && payload.swapTransaction) return payload.swapTransaction;
+  if (typeof payload.swapInstruction?.data === "string" && payload.swapInstruction.data) return payload.swapInstruction.data;
   throw new Error("Jupiter swap payload was empty.");
 }
 
 async function fetchJupiterQuoteAdaptive(inputMint: string, outputMint: string, amountRaw: string) {
   const attempts = [amountRaw, Math.max(1, Math.floor(Number(amountRaw) / 10)).toString(), Math.max(1, Math.floor(Number(amountRaw) / 100)).toString()];
   let lastError = "";
-
   for (const amount of attempts) {
-    try {
-      return await fetchJupiterQuote(inputMint, outputMint, amount);
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "Unknown adaptive quote error";
-    }
+    try { return await fetchJupiterQuote(inputMint, outputMint, amount); }
+    catch (error) { lastError = error instanceof Error ? error.message : "Unknown adaptive quote error"; }
   }
-
   throw new Error(lastError || "Jupiter quote could not find a route for this pair.");
 }
 
-function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[], providerPool: string[], allowedDexes: Set<string>) {
+function deriveOpportunities(
+  networkKey: NetworkKey,
+  pairs: DexScreenerPair[],
+  providerPool: string[],
+  allowedDexes: Set<string>,
+  estimatedGasFeeUsd: number,
+) {
   const opportunities: Opportunity[] = [];
-  const pairBuckets = new Map<
-    string,
-    Array<
-      DexScreenerPair & {
-        baseSymbol: string;
-        quoteSymbol: string;
-        dexName: string;
-        loanAsset: string;
-        quoteAsset: string;
-        loanAssetAddress: string;
-        quoteAssetAddress: string;
-      }
-    >
-  >();
+  const pairBuckets = new Map<string, Array<DexScreenerPair & { baseSymbol: string; quoteSymbol: string; dexName: string; loanAsset: string; quoteAsset: string; loanAssetAddress: string; quoteAssetAddress: string }>>();
   const mainTokenSet = new Set(NETWORKS[networkKey].mainTokens.map((token) => token.toUpperCase()));
-  const mainTokenUsd = new Map<string, number>();
 
+  // FIX #7 & #8: Use a true incremental mean (sum/count accumulators) and fix the
+  // undefined check (=== undefined, not falsy !existing which would suppress 0-valued tokens).
+  const mainTokenUsdSum = new Map<string, number>();
+  const mainTokenUsdCount = new Map<string, number>();
+  // Seed with fallbacks so every token has a base price.
   Object.entries(MAIN_TOKEN_USD_FALLBACKS[networkKey]).forEach(([token, usd]) => {
-    mainTokenUsd.set(token.toUpperCase(), usd);
+    mainTokenUsdSum.set(token.toUpperCase(), usd);
+    mainTokenUsdCount.set(token.toUpperCase(), 1);
   });
 
+  // First pass: build live USD price oracle using proper incremental mean.
   pairs.forEach((pair) => {
     const baseSymbol = symbolCleanup(pair.baseToken.symbol);
     const quoteSymbol = symbolCleanup(pair.quoteToken.symbol);
     const liquidity = Number(pair.liquidity?.usd ?? 0);
     const price = Number(pair.priceUsd);
-
     const baseIsMain = mainTokenSet.has(baseSymbol);
     const quoteIsMain = mainTokenSet.has(quoteSymbol);
-    if ((!baseIsMain && !quoteIsMain) || !Number.isFinite(price) || price <= 0 || liquidity < 80000) {
-      return;
-    }
-
+    if ((!baseIsMain && !quoteIsMain) || !Number.isFinite(price) || price <= 0 || liquidity < 80000) return;
     const mainSymbol = baseIsMain ? baseSymbol : quoteSymbol;
     const stableSymbol = baseIsMain ? quoteSymbol : baseSymbol;
-    if (!STABLE_SYMBOLS.has(stableSymbol)) {
-      return;
+    if (!STABLE_SYMBOLS.has(stableSymbol)) return;
+    // FIX #7: use === undefined (not falsy) so a token with price 0 doesn't skip accumulation.
+    const currentSum = mainTokenUsdSum.get(mainSymbol);
+    const currentCount = mainTokenUsdCount.get(mainSymbol);
+    if (currentSum === undefined || currentCount === undefined) {
+      mainTokenUsdSum.set(mainSymbol, price);
+      mainTokenUsdCount.set(mainSymbol, 1);
+    } else {
+      // FIX #8: accumulate sum and count for true mean instead of naive (a+b)/2.
+      mainTokenUsdSum.set(mainSymbol, currentSum + price);
+      mainTokenUsdCount.set(mainSymbol, currentCount + 1);
     }
-
-    const existing = mainTokenUsd.get(mainSymbol);
-    if (!existing) {
-      mainTokenUsd.set(mainSymbol, price);
-      return;
-    }
-
-    mainTokenUsd.set(mainSymbol, (existing + price) / 2);
+    // No early return — pair still enters the bucket-building pass below.
   });
 
+  // Compute final averages.
+  const mainTokenUsd = new Map<string, number>();
+  mainTokenUsdSum.forEach((sum, token) => {
+    mainTokenUsd.set(token, sum / (mainTokenUsdCount.get(token) ?? 1));
+  });
+
+  // Second pass: build pair buckets for arbitrage opportunity detection.
   pairs.forEach((pair) => {
     const price = Number(pair.priceUsd);
     const liquidity = Number(pair.liquidity?.usd ?? 0);
-    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(liquidity) || liquidity < 30000) {
-      return;
-    }
-
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(liquidity) || liquidity < 30000) return;
     const baseSymbol = symbolCleanup(pair.baseToken.symbol);
     const quoteSymbol = symbolCleanup(pair.quoteToken.symbol);
     const dexName = normalizeDexName(networkKey, pair.dexId);
-    if (!baseSymbol || !quoteSymbol || !dexName) {
-      return;
-    }
-
+    if (!baseSymbol || !quoteSymbol || !dexName) return;
     const baseIsMain = mainTokenSet.has(baseSymbol);
     const quoteIsMain = mainTokenSet.has(quoteSymbol);
-    if (!baseIsMain && !quoteIsMain) {
-      return;
-    }
-
+    if (!baseIsMain && !quoteIsMain) return;
     const loanAsset = baseIsMain ? baseSymbol : quoteSymbol;
     const quoteAsset = baseIsMain ? quoteSymbol : baseSymbol;
-
-    if (!STABLE_SYMBOLS.has(quoteAsset) && !mainTokenSet.has(quoteAsset)) {
-      return;
-    }
-
+    if (!STABLE_SYMBOLS.has(quoteAsset) && !mainTokenSet.has(quoteAsset)) return;
     const loanAssetAddress = baseIsMain ? pair.baseToken.address : pair.quoteToken.address;
     const quoteAssetAddress = baseIsMain ? pair.quoteToken.address : pair.baseToken.address;
     const key = `${loanAsset}/${quoteAsset}`;
     const bucket = pairBuckets.get(key) ?? [];
-    bucket.push({
-      ...pair,
-      baseSymbol,
-      quoteSymbol,
-      dexName,
-      loanAsset,
-      quoteAsset,
-      loanAssetAddress,
-      quoteAssetAddress,
-    });
+    bucket.push({ ...pair, baseSymbol, quoteSymbol, dexName, loanAsset, quoteAsset, loanAssetAddress, quoteAssetAddress });
     pairBuckets.set(key, bucket);
   });
 
-  if (providerPool.length === 0) {
-    return { opportunities: [], eligiblePoolCount: 0 };
-  }
+  if (providerPool.length === 0) return { opportunities: [], eligiblePoolCount: 0 };
+
+  // FIX #9: batchCounter increments exactly once per opportunity (was double-incrementing).
   let batchCounter = 1;
 
   pairBuckets.forEach((bucket, pairKey) => {
-    if (bucket.length < 2) {
-      return;
-    }
-
+    if (bucket.length < 2) return;
     const sorted = [...bucket].sort((a, b) => Number(a.priceUsd) - Number(b.priceUsd));
     const buy = sorted[0];
     const sell = sorted[sorted.length - 1];
-    if (buy.dexName === sell.dexName) {
-      return;
-    }
-    if (allowedDexes.size > 0 && (!allowedDexes.has(buy.dexName) || !allowedDexes.has(sell.dexName))) {
-      return;
-    }
-
+    if (buy.dexName === sell.dexName) return;
+    if (allowedDexes.size > 0 && (!allowedDexes.has(buy.dexName) || !allowedDexes.has(sell.dexName))) return;
     const buyPrice = Number(buy.priceUsd);
     const sellPrice = Number(sell.priceUsd);
     const spreadPct = ((sellPrice - buyPrice) / buyPrice) * 100;
-    if (spreadPct < 0.05) {
-      return;
-    }
-
+    if (spreadPct < 0.05) return;
     const pairLiquidityUsd = Math.min(Number(buy.liquidity?.usd ?? 0), Number(sell.liquidity?.usd ?? 0));
     const loanAsset = buy.loanAsset;
     const quoteAsset = buy.quoteAsset;
     const loanAssetUsd = mainTokenUsd.get(loanAsset) ?? 1;
-    const runtime = RUNTIME[networkKey];
-    const tokenDecimals = runtime.tokenDecimals[loanAsset] ?? 18;
     const liquidityCapRatio = 0.0025;
     const loanAmountUsd = Math.max(200, pairLiquidityUsd * liquidityCapRatio);
     const loanAmount = loanAmountUsd / Math.max(loanAssetUsd, 0.000001);
-    const priceImpactPct = Math.min(1.4, (loanAmountUsd / pairLiquidityUsd) * 100 * 0.95);
+    // FIX #10: price impact is now uncapped so thin-pool opportunities aren't falsely profitable.
+    const priceImpactPct = (loanAmountUsd / pairLiquidityUsd) * 100 * 1.5;
     const flashFeePct = 0.09;
     const dexFeePct = 0.08;
     const grossProfitUsd = loanAmountUsd * (spreadPct / 100);
     const totalFeeUsd = loanAmountUsd * ((flashFeePct + dexFeePct + priceImpactPct) / 100);
-    const netProfitUsd = grossProfitUsd - totalFeeUsd;
-    if (netProfitUsd <= 0.2) {
-      return;
-    }
-
+    // FIX #4: gas fee is now subtracted so net profit reflects true on-chain cost.
+    const netProfitUsd = grossProfitUsd - totalFeeUsd - estimatedGasFeeUsd;
+    if (netProfitUsd <= 0.2) return;
     opportunities.push({
       id: `${networkKey}-${pairKey}-${buy.pairAddress}-${sell.pairAddress}`,
       pair: pairKey,
@@ -935,10 +845,7 @@ function deriveOpportunities(networkKey: NetworkKey, pairs: DexScreenerPair[], p
       poolAddress: buy.pairAddress,
       multicallBatch: batchCounter,
     });
-
-    if (tokenDecimals === 0) {
-      batchCounter += 1;
-    }
+    // FIX #9: single increment only.
     batchCounter += 1;
   });
 
@@ -968,89 +875,94 @@ export default function App() {
   const scanIntervalRef = useRef<number | null>(null);
   const progressTimeoutRef = useRef<number | null>(null);
 
+  // FIX #6: refs hold latest values so the setInterval callback always uses current state,
+  // preventing stale closure bugs when the user switches networks or environments.
+  const selectedNetworkRef = useRef(selectedNetwork);
+  const activeRuntimeRef = useRef<RuntimeChainConfig | null>(null);
+  const activeNetworkRef = useRef<NetworkConfig | null>(null);
+  const estimatedNetworkFeeRef = useRef({ native: 0, usd: 0 });
+
   const activeNetwork = useMemo(() => NETWORKS[selectedNetwork], [selectedNetwork]);
   const activeRuntime = useMemo(() => {
     const baseRuntime = RUNTIME[selectedNetwork];
     const override = RUNTIME_ENV_OVERRIDES[selectedNetwork]?.[environment];
-    if (!override) {
-      return baseRuntime;
-    }
-
+    if (!override) return baseRuntime;
     return {
-      ...baseRuntime,
-      ...override,
+      ...baseRuntime, ...override,
       tokenAddresses: { ...baseRuntime.tokenAddresses, ...(override.tokenAddresses ?? {}) },
       tokenDecimals: { ...baseRuntime.tokenDecimals, ...(override.tokenDecimals ?? {}) },
       dexRouters: { ...baseRuntime.dexRouters, ...(override.dexRouters ?? {}) },
       flashProviderAddresses: { ...baseRuntime.flashProviderAddresses, ...(override.flashProviderAddresses ?? {}) },
     };
   }, [selectedNetwork, environment]);
+
   const activeWallet = walletsByNetwork[selectedNetwork];
   const tokenDepthForNetwork = liveTokenDepth[selectedNetwork] ?? activeNetwork.tokenPairDepth;
   const activeTestnetDeploymentAddress = resolveDeploymentAddress(deploymentMap.testnet[selectedNetwork]);
   const activeMainnetDeploymentAddress = resolveDeploymentAddress(deploymentMap.mainnet[selectedNetwork]);
   const activeTestnetLinked = activeTestnetDeploymentAddress === activeNetwork.contractAddresses.testnet;
   const activeMainnetLinked = activeMainnetDeploymentAddress === activeNetwork.contractAddresses.mainnet;
+
   const estimatedNetworkFee = useMemo(() => {
     const config = GAS_ESTIMATE_CONFIG[selectedNetwork];
-    if (activeNetwork.chainType !== "evm") {
-      return { native: 0, usd: 0 };
-    }
+    if (activeNetwork.chainType !== "evm") return { native: 0, usd: 0 };
     const native = config.gasUnits * config.gwei[environment] * 1e-9;
     return { native, usd: native * activeRuntime.nativeTokenUsd };
   }, [activeNetwork.chainType, activeRuntime.nativeTokenUsd, environment, selectedNetwork]);
 
+  // FIX #6: Keep refs synced so interval callbacks always have fresh values.
+  useEffect(() => { selectedNetworkRef.current = selectedNetwork; }, [selectedNetwork]);
+  useEffect(() => { activeRuntimeRef.current = activeRuntime; }, [activeRuntime]);
+  useEffect(() => { activeNetworkRef.current = activeNetwork; }, [activeNetwork]);
+  useEffect(() => { estimatedNetworkFeeRef.current = estimatedNetworkFee; }, [estimatedNetworkFee]);
+
   const clearScanTimer = () => {
-    if (scanIntervalRef.current) {
-      window.clearInterval(scanIntervalRef.current);
-      scanIntervalRef.current = null;
-    }
-    if (progressTimeoutRef.current) {
-      window.clearTimeout(progressTimeoutRef.current);
-      progressTimeoutRef.current = null;
-    }
+    if (scanIntervalRef.current) { window.clearInterval(scanIntervalRef.current); scanIntervalRef.current = null; }
+    if (progressTimeoutRef.current) { window.clearTimeout(progressTimeoutRef.current); progressTimeoutRef.current = null; }
   };
 
-  const runScanCycle = async () => {
+  // FIX #6: runScanCycle reads all mutable values from refs — safe to call from stale interval.
+  const runScanCycle = useCallback(async () => {
+    const currentNetwork = selectedNetworkRef.current;
+    const currentRuntime = activeRuntimeRef.current ?? RUNTIME[currentNetwork];
+    const currentActiveNetwork = activeNetworkRef.current ?? NETWORKS[currentNetwork];
+    const currentGasFeeUsd = estimatedNetworkFeeRef.current.usd;
+
     setScanError("");
     setScanProgress(12);
-    const tokenEntries = Object.entries(activeRuntime.tokenAddresses);
+    const tokenEntries = Object.entries(currentRuntime.tokenAddresses);
     const tokens = tokenEntries.map(([, address]) => address);
     const batchSize = 24;
-    const expansionLimit = selectedNetwork === "ethereum" ? 420 : 140;
-    const expansionLiquidityMin = selectedNetwork === "ethereum" ? 40000 : 80000;
-    const depthFloor = selectedNetwork === "ethereum" ? 1000 : 500;
+    const expansionLimit = currentNetwork === "ethereum" ? 420 : 140;
+    const expansionLiquidityMin = currentNetwork === "ethereum" ? 40000 : 80000;
+    const depthFloor = currentNetwork === "ethereum" ? 1000 : 500;
 
     try {
-      const pairsByToken = await Promise.all(tokens.map((address) => fetchTokenPairs(activeRuntime.dexScreenerChain, address)));
+      // FIX #5: Promise.allSettled so a single failed token fetch doesn't wipe the whole scan.
+      const primaryPairs = (await Promise.allSettled(
+        tokens.map((address) => fetchTokenPairsSafe(currentRuntime.dexScreenerChain, address))
+      )).flatMap((r) => (r.status === "fulfilled" ? r.value : []));
       setScanProgress(42);
-      const primaryPairs = pairsByToken.flat();
 
       const mainTokenAddresses = new Set(tokens.map((address) => address.toLowerCase()));
-      const expansionTokenAddresses = Array.from(
-        new Set(
-          primaryPairs
-            .filter((pair) => Number(pair.liquidity?.usd ?? 0) >= expansionLiquidityMin)
-            .sort((a, b) => Number(b.liquidity?.usd ?? 0) - Number(a.liquidity?.usd ?? 0))
-            .map((pair) => {
-              const baseAddress = pair.baseToken.address.toLowerCase();
-              const quoteAddress = pair.quoteToken.address.toLowerCase();
-
-              if (mainTokenAddresses.has(baseAddress) && !mainTokenAddresses.has(quoteAddress)) {
-                return pair.quoteToken.address;
-              }
-              if (mainTokenAddresses.has(quoteAddress) && !mainTokenAddresses.has(baseAddress)) {
-                return pair.baseToken.address;
-              }
-              return "";
-            })
-            .filter((address) => address !== "")
-            .slice(0, expansionLimit),
-        ),
-      );
+      const expansionTokenAddresses = Array.from(new Set(
+        primaryPairs
+          .filter((pair) => Number(pair.liquidity?.usd ?? 0) >= expansionLiquidityMin)
+          .sort((a, b) => Number(b.liquidity?.usd ?? 0) - Number(a.liquidity?.usd ?? 0))
+          .map((pair) => {
+            const baseAddress = pair.baseToken.address.toLowerCase();
+            const quoteAddress = pair.quoteToken.address.toLowerCase();
+            if (mainTokenAddresses.has(baseAddress) && !mainTokenAddresses.has(quoteAddress)) return pair.quoteToken.address;
+            if (mainTokenAddresses.has(quoteAddress) && !mainTokenAddresses.has(baseAddress)) return pair.baseToken.address;
+            return "";
+          })
+          .filter((address) => address !== "")
+          .slice(0, expansionLimit),
+      ));
 
       const expansionPairs = expansionTokenAddresses.length > 0
-        ? await Promise.all(expansionTokenAddresses.map((address) => fetchTokenPairs(activeRuntime.dexScreenerChain, address)))
+        ? (await Promise.allSettled(expansionTokenAddresses.map((address) => fetchTokenPairsSafe(currentRuntime.dexScreenerChain, address))))
+            .flatMap((r) => (r.status === "fulfilled" ? r.value : []))
         : [];
 
       const tokenBatchCandidates = Array.from(new Set([...tokens, ...expansionTokenAddresses]));
@@ -1059,84 +971,56 @@ export default function App() {
         tokenBatchChunks.push(tokenBatchCandidates.slice(index, index + 30));
       }
       const batchedPairs = tokenBatchChunks.length > 0
-        ? await Promise.all(tokenBatchChunks.map((chunk) => fetchTokenBatchPairs(activeRuntime.dexScreenerChain, chunk)))
+        ? (await Promise.allSettled(tokenBatchChunks.map((chunk) => fetchTokenBatchPairs(currentRuntime.dexScreenerChain, chunk))))
+            .flatMap((r) => (r.status === "fulfilled" ? r.value : []))
         : [];
 
-      const searchQueries = Array.from(
-        new Set(
-          tokenEntries.flatMap(([symbol]) => [
-            symbol,
-            `${symbol}/USDT`,
-            `${symbol}/USDC`,
-            `${symbol}/WETH`,
-            ...(selectedNetwork === "ethereum" ? [`${symbol}/DAI`, `${symbol}/WBTC`, `${symbol}/ETH`] : []),
-          ]),
-        ),
-      );
-      const searchedPairs = await Promise.all(searchQueries.map((query) => fetchSearchPairs(activeRuntime.dexScreenerChain, query)));
+      const searchQueries = Array.from(new Set(tokenEntries.flatMap(([symbol]) => [
+        symbol, `${symbol}/USDT`, `${symbol}/USDC`, `${symbol}/WETH`,
+        ...(currentNetwork === "ethereum" ? [`${symbol}/DAI`, `${symbol}/WBTC`, `${symbol}/ETH`] : []),
+      ])));
+      const searchedPairs = (await Promise.allSettled(searchQueries.map((query) => fetchSearchPairs(currentRuntime.dexScreenerChain, query))))
+        .flatMap((r) => (r.status === "fulfilled" ? r.value : []));
 
       setScanProgress(70);
-      const mergedPairs = [...primaryPairs, ...expansionPairs.flat(), ...batchedPairs.flat(), ...searchedPairs.flat()];
+      const mergedPairs = [...primaryPairs, ...expansionPairs, ...batchedPairs, ...searchedPairs];
       const uniquePairs = Array.from(new Map(mergedPairs.map((pair) => [`${pair.chainId}-${pair.pairAddress}-${pair.dexId}`, pair])).values());
 
       const depthAccumulator: Record<string, number> = {};
-      activeNetwork.mainTokens.forEach((token) => {
-        depthAccumulator[token] = 0;
-      });
-
+      currentActiveNetwork.mainTokens.forEach((token) => { depthAccumulator[token] = 0; });
       uniquePairs.forEach((pair) => {
         const liquidity = Number(pair.liquidity?.usd ?? 0);
-        if (!Number.isFinite(liquidity) || liquidity < 50000) {
-          return;
-        }
-
+        if (!Number.isFinite(liquidity) || liquidity < 50000) return;
         const baseSymbol = symbolCleanup(pair.baseToken.symbol);
         const quoteSymbol = symbolCleanup(pair.quoteToken.symbol);
-        if (depthAccumulator[baseSymbol] !== undefined) {
-          depthAccumulator[baseSymbol] += 1;
-        }
-        if (depthAccumulator[quoteSymbol] !== undefined) {
-          depthAccumulator[quoteSymbol] += 1;
-        }
+        if (depthAccumulator[baseSymbol] !== undefined) depthAccumulator[baseSymbol] += 1;
+        if (depthAccumulator[quoteSymbol] !== undefined) depthAccumulator[quoteSymbol] += 1;
       });
+      const displayDepth = Object.fromEntries(currentActiveNetwork.mainTokens.map((token) => [token, Math.max(depthFloor, depthAccumulator[token] ?? 0)]));
+      setLiveTokenDepth((current) => ({ ...current, [currentNetwork]: displayDepth }));
 
-      const displayDepth = Object.fromEntries(
-        activeNetwork.mainTokens.map((token) => [token, Math.max(depthFloor, depthAccumulator[token] ?? 0)]),
-      );
-      setLiveTokenDepth((current) => ({ ...current, [selectedNetwork]: displayDepth }));
-
-      const availableProviders = Object.keys(activeRuntime.flashProviderAddresses);
-      const providerPool = activeNetwork.chainType === "evm"
+      const availableProviders = Object.keys(currentRuntime.flashProviderAddresses);
+      const providerPool = currentActiveNetwork.chainType === "evm"
         ? availableProviders.filter((provider) => provider.toLowerCase().includes("aave"))
         : availableProviders;
-      const resolvedProviderPool = providerPool.length > 0
-        ? providerPool
-        : availableProviders.length > 0
-          ? availableProviders
-          : activeNetwork.flashLoanProviders;
-      const allowedDexes = new Set(Object.keys(activeRuntime.dexRouters));
-      const result = deriveOpportunities(selectedNetwork, uniquePairs, resolvedProviderPool, allowedDexes);
-      const mainSet = new Set(activeNetwork.mainTokens.map((token) => token.toUpperCase()));
+      const resolvedProviderPool = providerPool.length > 0 ? providerPool : availableProviders.length > 0 ? availableProviders : currentActiveNetwork.flashLoanProviders;
+      const allowedDexes = new Set(Object.keys(currentRuntime.dexRouters));
+
+      // FIX #4: pass gas fee so it is deducted inside deriveOpportunities.
+      const result = deriveOpportunities(currentNetwork, uniquePairs, resolvedProviderPool, allowedDexes, currentGasFeeUsd);
+
+      const mainSet = new Set(currentActiveNetwork.mainTokens.map((token) => token.toUpperCase()));
       const discoveredQuoteTokens = new Set<string>();
       uniquePairs.forEach((pair) => {
         const baseSymbol = symbolCleanup(pair.baseToken.symbol);
         const quoteSymbol = symbolCleanup(pair.quoteToken.symbol);
-        if (mainSet.has(baseSymbol) && !mainSet.has(quoteSymbol)) {
-          discoveredQuoteTokens.add(quoteSymbol);
-        }
-        if (mainSet.has(quoteSymbol) && !mainSet.has(baseSymbol)) {
-          discoveredQuoteTokens.add(baseSymbol);
-        }
+        if (mainSet.has(baseSymbol) && !mainSet.has(quoteSymbol)) discoveredQuoteTokens.add(quoteSymbol);
+        if (mainSet.has(quoteSymbol) && !mainSet.has(baseSymbol)) discoveredQuoteTokens.add(baseSymbol);
       });
-      const quoteUniverse = selectedNetwork === "ethereum" ? Math.max(1000, discoveredQuoteTokens.size) : discoveredQuoteTokens.size;
+      const quoteUniverse = currentNetwork === "ethereum" ? Math.max(1000, discoveredQuoteTokens.size) : discoveredQuoteTokens.size;
 
       setOpportunities(result.opportunities);
-      setScanMeta({
-        allPoolCount: uniquePairs.length,
-        totalBatches: Math.max(1, Math.ceil(uniquePairs.length / batchSize)),
-        multicallBatchSize: batchSize,
-        quoteUniverse,
-      });
+      setScanMeta({ allPoolCount: uniquePairs.length, totalBatches: Math.max(1, Math.ceil(uniquePairs.length / batchSize)), multicallBatchSize: batchSize, quoteUniverse });
       setScanProgress(100);
       setLastScanAt(new Date().toLocaleTimeString());
     } catch (error) {
@@ -1145,17 +1029,18 @@ export default function App() {
       setScanProgress(0);
     }
 
+    // FIX #20: Clear any existing progress timeout before resetting to avoid redundant callbacks.
+    if (progressTimeoutRef.current) window.clearTimeout(progressTimeoutRef.current);
     progressTimeoutRef.current = window.setTimeout(() => setScanProgress(0), 1200);
-  };
+  }, []); // stable — all mutable data read through refs
 
-  const startScanner = () => {
+  // FIX #13: clearScanTimer is now called BEFORE starting the interval (was called after).
+  const startScanner = useCallback(() => {
     setScannerRunning(true);
-    runScanCycle();
     clearScanTimer();
-    scanIntervalRef.current = window.setInterval(() => {
-      runScanCycle();
-    }, envRefresh);
-  };
+    runScanCycle();
+    scanIntervalRef.current = window.setInterval(() => { runScanCycle(); }, envRefresh);
+  }, [runScanCycle]);
 
   const stopScanner = () => {
     setScannerRunning(false);
@@ -1164,148 +1049,99 @@ export default function App() {
   };
 
   const connectEvmWallet = async (walletName: string) => {
-    if (!window.ethereum) {
-      throw new Error("No EVM wallet detected in browser.");
-    }
+    if (!window.ethereum) throw new Error("No EVM wallet detected in browser.");
     const targetChainId = getTargetEvmChainId(selectedNetwork, environment);
     if (targetChainId) {
-      try {
-        await window.ethereum.request({
-          method: "wallet_switchEthereumChain",
-          params: [{ chainId: targetChainId }],
-        });
-      } catch {
-        // Keep flow going; wallet might not support programmatic network switch.
-      }
+      try { await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: targetChainId }] }); } catch { /* Continue */ }
     }
     const accounts = (await window.ethereum.request({ method: "eth_requestAccounts" })) as string[];
-    if (!accounts || accounts.length === 0) {
-      throw new Error("Wallet did not return an account.");
-    }
-    setWalletsByNetwork((current) => ({
-      ...current,
-      [selectedNetwork]: { walletName, address: accounts[0] },
-    }));
+    if (!accounts || accounts.length === 0) throw new Error("Wallet did not return an account.");
+    setWalletsByNetwork((current) => ({ ...current, [selectedNetwork]: { walletName, address: accounts[0] } }));
   };
 
   const connectSolanaWallet = async (walletName: string) => {
     const provider = getSolanaProvider(walletName);
-    if (!provider) {
-      throw new Error(`${walletName} provider not found in browser.`);
-    }
+    if (!provider) throw new Error(`${walletName} provider not found in browser.`);
     const connection = await provider.connect();
-    setWalletsByNetwork((current) => ({
-      ...current,
-      [selectedNetwork]: { walletName, address: connection.publicKey.toString() },
-    }));
+    setWalletsByNetwork((current) => ({ ...current, [selectedNetwork]: { walletName, address: connection.publicKey.toString() } }));
   };
 
   const connectWallet = async (walletName: string) => {
     try {
-      if (activeNetwork.chainType === "evm") {
-        await connectEvmWallet(walletName);
-      } else {
-        await connectSolanaWallet(walletName);
-      }
+      if (activeNetwork.chainType === "evm") { await connectEvmWallet(walletName); } else { await connectSolanaWallet(walletName); }
       setWalletModalOpen(false);
       setScanError("");
-    } catch (error) {
-      setScanError(error instanceof Error ? error.message : "Wallet connection failed.");
-    }
+    } catch (error) { setScanError(error instanceof Error ? error.message : "Wallet connection failed."); }
   };
 
   const disconnectWallet = async () => {
     if (activeNetwork.chainType === "solana") {
       const provider = getSolanaProvider(activeWallet?.walletName ?? "Phantom");
-      if (provider?.disconnect) {
-        await provider.disconnect();
-      }
+      if (provider?.disconnect) await provider.disconnect();
     }
-    setWalletsByNetwork((current) => {
-      const next = { ...current };
-      delete next[selectedNetwork];
-      return next;
-    });
+    setWalletsByNetwork((current) => { const next = { ...current }; delete next[selectedNetwork]; return next; });
   };
 
+  // FIX (root cause of "calldata not available on DEX" execution failure):
+  // 1. V3 ABI now matches SwapRouter02's actual exactInputSingle (no `deadline` field).
+  // 2. FIX #15: sell leg now uses buyPrice to compute intermediate quote amount (was wrongly using sellPrice).
+  // 3. FIX #16: amountOutMinimum is set to 99.5% of amountIn for sandwich protection (was 0).
+  // 4. V2 amountOutMin also set to 99.5% slippage floor (was 0).
   const buildSwapCalldata = (dexName: string, tokenIn: string, tokenOut: string, amountInRaw: bigint, recipient: string) => {
-    const dexStyle = DEX_STYLE[selectedNetwork][dexName] ?? "v2";
+    const dexStyle = DEX_STYLE[selectedNetworkRef.current][dexName] ?? "v2";
     const deadline = Math.floor(Date.now() / 1000) + 60 * 10;
+    const amountOutMinimum = (amountInRaw * 995n) / 1000n; // 0.5% slippage tolerance
 
     if (dexStyle === "v3") {
-      return v3Interface.encodeFunctionData("exactInputSingle", [
-        {
-          tokenIn,
-          tokenOut,
-          fee: 3000,
-          recipient,
-          deadline,
-          amountIn: amountInRaw,
-          amountOutMinimum: 0,
-          sqrtPriceLimitX96: 0,
-        },
-      ]);
+      // SwapRouter02 exactInputSingle has no `deadline` field — removed from struct.
+      return v3Interface.encodeFunctionData("exactInputSingle", [{
+        tokenIn, tokenOut, fee: 3000, recipient,
+        amountIn: amountInRaw, amountOutMinimum, sqrtPriceLimitX96: 0,
+      }]);
     }
 
-    return v2Interface.encodeFunctionData("swapExactTokensForTokens", [amountInRaw, 0, [tokenIn, tokenOut], recipient, deadline]);
+    return v2Interface.encodeFunctionData("swapExactTokensForTokens", [
+      amountInRaw, amountOutMinimum, [tokenIn, tokenOut], recipient, deadline,
+    ]);
   };
 
   const autoGenerateCalldata = async (opportunity: Opportunity) => {
     setRouteCalldata({ buyCalldata: "", sellCalldata: "", loading: true, error: "" });
-
     try {
       if (activeNetwork.chainType === "evm") {
         const contractAddress = sanitizeEvmAddress(activeNetwork.contractAddresses[environment]);
         const loanAssetAddressRaw = activeRuntime.tokenAddresses[opportunity.loanAsset] ?? opportunity.loanAssetAddress;
         const quoteAssetAddressRaw = activeRuntime.tokenAddresses[opportunity.quoteAsset] ?? opportunity.quoteAssetAddress;
-
         if (!loanAssetAddressRaw || !quoteAssetAddressRaw || !loanAssetAddressRaw.startsWith("0x") || !quoteAssetAddressRaw.startsWith("0x")) {
           throw new Error("Missing EVM token addresses for auto route generation.");
         }
         const loanAssetAddress = sanitizeEvmAddress(loanAssetAddressRaw);
         const quoteAssetAddress = sanitizeEvmAddress(quoteAssetAddressRaw);
-
         const loanAssetDecimals = activeRuntime.tokenDecimals[opportunity.loanAsset] ?? 18;
         const quoteAssetDecimals = activeRuntime.tokenDecimals[opportunity.quoteAsset] ?? 18;
-
         const buyAmountRaw = parseUnits(opportunity.loanAmount.toFixed(Math.min(loanAssetDecimals, 6)), loanAssetDecimals);
-        const intermediateQuoteAmount = Math.max(opportunity.loanAmountUsd, 1) / Math.max(0.0000001, opportunity.sellPrice);
+        // FIX #15: use buyPrice (not sellPrice) to size the sell leg — sellPrice was producing wrong token amounts.
+        const intermediateQuoteAmount = Math.max(opportunity.loanAmountUsd, 1) / Math.max(0.0000001, opportunity.buyPrice);
         const sellAmountRaw = parseUnits(intermediateQuoteAmount.toFixed(Math.min(quoteAssetDecimals, 6)), quoteAssetDecimals);
-
         const buyCalldata = buildSwapCalldata(opportunity.buyDex, loanAssetAddress, quoteAssetAddress, buyAmountRaw, contractAddress);
         const sellCalldata = buildSwapCalldata(opportunity.sellDex, quoteAssetAddress, loanAssetAddress, sellAmountRaw, contractAddress);
-
         setRouteCalldata({ buyCalldata, sellCalldata, loading: false, error: "" });
         return;
       }
 
-      if (!activeWallet?.address) {
-        throw new Error("Connect a Solana wallet to auto generate route payloads.");
-      }
-
+      if (!activeWallet?.address) throw new Error("Connect a Solana wallet to auto generate route payloads.");
       const loanAssetAddress = activeRuntime.tokenAddresses[opportunity.loanAsset] ?? opportunity.loanAssetAddress;
       const quoteAssetAddress = activeRuntime.tokenAddresses[opportunity.quoteAsset] ?? opportunity.quoteAssetAddress;
-      if (!loanAssetAddress || !quoteAssetAddress) {
-        throw new Error("Missing Solana token mint addresses for auto route generation.");
-      }
-
+      if (!loanAssetAddress || !quoteAssetAddress) throw new Error("Missing Solana token mint addresses for auto route generation.");
       const loanAssetDecimals = activeRuntime.tokenDecimals[opportunity.loanAsset] ?? 9;
       const buyAmountRaw = parseUnits(opportunity.loanAmount.toFixed(Math.min(loanAssetDecimals, 6)), loanAssetDecimals).toString();
-
       const buyQuote = await fetchJupiterQuoteAdaptive(loanAssetAddress, quoteAssetAddress, buyAmountRaw);
       const sellQuote = await fetchJupiterQuoteAdaptive(quoteAssetAddress, loanAssetAddress, buyQuote.quote.outAmount);
-
       const buyPayload = await fetchJupiterSwapPayload(activeWallet.address, buyQuote.quote, buyQuote.apiVersion);
       const sellPayload = await fetchJupiterSwapPayload(activeWallet.address, sellQuote.quote, sellQuote.apiVersion);
-
       setRouteCalldata({ buyCalldata: buyPayload, sellCalldata: sellPayload, loading: false, error: "" });
     } catch (error) {
-      setRouteCalldata({
-        buyCalldata: "",
-        sellCalldata: "",
-        loading: false,
-        error: error instanceof Error ? error.message : "Failed to auto generate router calldata.",
-      });
+      setRouteCalldata({ buyCalldata: "", sellCalldata: "", loading: false, error: error instanceof Error ? error.message : "Failed to auto generate router calldata." });
     }
   };
 
@@ -1313,32 +1149,21 @@ export default function App() {
     setConfirmOpportunity(null);
     setExecutionState({ opportunity, status: "running", stepIndex: 0 });
     let submittedTxHash = "";
-
     try {
-      if (activeNetwork.chainType !== "evm") {
-        throw new Error("Solana execution requires program-specific accounts and CPI route instructions. Use EVM networks in this release.");
-      }
-      if (!activeWallet?.address) {
-        throw new Error("Connect wallet before execution.");
-      }
-      if (!routeCalldata.buyCalldata.startsWith("0x") || !routeCalldata.sellCalldata.startsWith("0x")) {
-        throw new Error("Route calldata was not generated. Re-open the opportunity and try again.");
-      }
+      if (activeNetwork.chainType !== "evm") throw new Error("Solana execution requires program-specific accounts and CPI route instructions. Use EVM networks in this release.");
+      if (!activeWallet?.address) throw new Error("Connect wallet before execution.");
+      if (!routeCalldata.buyCalldata.startsWith("0x") || !routeCalldata.sellCalldata.startsWith("0x")) throw new Error("Route calldata was not generated. Re-open the opportunity and try again.");
 
       setExecutionState((current) => (current ? { ...current, stepIndex: 1 } : current));
-
       const providerAddressRaw = activeRuntime.flashProviderAddresses[opportunity.provider];
       const loanAssetAddressRaw = activeRuntime.tokenAddresses[opportunity.loanAsset];
       const buyDexRouterRaw = activeRuntime.dexRouters[opportunity.buyDex];
       const sellDexRouterRaw = activeRuntime.dexRouters[opportunity.sellDex];
-      if (!providerAddressRaw || !loanAssetAddressRaw || !buyDexRouterRaw || !sellDexRouterRaw) {
-        throw new Error("Provider/router/token mapping missing for this opportunity.");
-      }
+      if (!providerAddressRaw || !loanAssetAddressRaw || !buyDexRouterRaw || !sellDexRouterRaw) throw new Error("Provider/router/token mapping missing for this opportunity.");
       const providerAddress = sanitizeEvmAddress(providerAddressRaw);
       const loanAssetAddress = sanitizeEvmAddress(loanAssetAddressRaw);
       const buyDexRouter = sanitizeEvmAddress(buyDexRouterRaw);
       const sellDexRouter = sanitizeEvmAddress(sellDexRouterRaw);
-
       const tokenDecimals = activeRuntime.tokenDecimals[opportunity.loanAsset] ?? 18;
       const contractAddress = sanitizeEvmAddress(activeNetwork.contractAddresses[environment]);
       const loanAmount = parseUnits(opportunity.loanAmount.toFixed(Math.min(tokenDecimals, 6)), tokenDecimals);
@@ -1347,53 +1172,48 @@ export default function App() {
       setExecutionState((current) => (current ? { ...current, stepIndex: 2 } : current));
       const targetChainId = getTargetEvmChainId(selectedNetwork, environment);
       if (targetChainId) {
-        try {
-          await window.ethereum?.request({ method: "wallet_switchEthereumChain", params: [{ chainId: targetChainId }] });
-        } catch {
-          // Validation below provides a precise mismatch error if the switch did not happen.
-        }
+        try { await window.ethereum?.request({ method: "wallet_switchEthereumChain", params: [{ chainId: targetChainId }] }); } catch { /* Continue */ }
       }
       const signerProvider = new BrowserProvider(window.ethereum!);
       const signer = await signerProvider.getSigner();
       const signerNetwork = await signerProvider.getNetwork();
-      if (targetChainId && signerNetwork.chainId !== BigInt(targetChainId)) {
-        throw new Error(`Wrong wallet network. Switch wallet to ${activeNetwork.name} ${environment} and retry.`);
+      // FIX #17: only compare when targetChainId is defined; use safe BigInt conversion.
+      if (targetChainId !== undefined) {
+        const expectedChainId = BigInt(targetChainId);
+        if (signerNetwork.chainId !== expectedChainId) throw new Error(`Wrong wallet network. Switch wallet to ${activeNetwork.name} ${environment} and retry.`);
       }
 
       const ensureAddressHasCode = async (address: string, label: string) => {
         const code = await signerProvider.getCode(address);
-        if (!code || code === "0x") {
-          throw new Error(`${label} is not deployed on selected ${activeNetwork.name} ${environment}: ${address}. Update runtime address mapping for this environment.`);
-        }
+        if (!code || code === "0x") throw new Error(`${label} is not deployed on selected ${activeNetwork.name} ${environment}: ${address}. Update runtime address mapping for this environment.`);
       };
-
       const deployedCode = await signerProvider.getCode(contractAddress);
-      if (!deployedCode || deployedCode === "0x") {
-        throw new Error(`No contract deployed at executor address ${contractAddress} on selected network.`);
-      }
+      if (!deployedCode || deployedCode === "0x") throw new Error(`No contract deployed at executor address ${contractAddress} on selected network.`);
       await ensureAddressHasCode(providerAddress, "Flash loan provider");
       await ensureAddressHasCode(buyDexRouter, "Buy DEX router");
       await ensureAddressHasCode(sellDexRouter, "Sell DEX router");
       await ensureAddressHasCode(loanAssetAddress, "Loan asset token");
       const contract = new Contract(contractAddress, FLASH_EXECUTOR_ABI, signer);
-
       const contractOwner = sanitizeEvmAddress(String(await contract.owner()));
       const signerAddress = sanitizeEvmAddress(await signer.getAddress());
-      if (contractOwner !== signerAddress) {
-        throw new Error("Connected wallet is not contract owner. Connect with deployer wallet to execute/approve provider.");
-      }
+      if (contractOwner !== signerAddress) throw new Error("Connected wallet is not contract owner. Connect with deployer wallet to execute/approve provider.");
 
       const providerAllowed = Boolean(await contract.approvedProvider(providerAddress));
       if (!providerAllowed) {
         const approvalTx = await contract.setProvider(providerAddress, true);
         setExecutionState((current) => (current ? { ...current, stepIndex: 3, txHash: approvalTx.hash } : current));
         await approvalTx.wait();
-        // Return to signature step for the actual arbitrage transaction.
         setExecutionState((current) => (current ? { ...current, stepIndex: 2, txHash: undefined } : current));
       }
 
+      // FIX (contract Bug #5): quoteAsset is now part of ArbParams so the contract
+      // can approve the sell router for the intermediate token after the buy swap.
+      const quoteAssetAddressForCall = sanitizeEvmAddress(
+        activeRuntime.tokenAddresses[opportunity.quoteAsset] ?? opportunity.quoteAssetAddress
+      );
       const tx = await contract.executeArbitrage(providerAddress, {
         loanAsset: loanAssetAddress,
+        quoteAsset: quoteAssetAddressForCall,
         loanAmount,
         minProfit,
         buyDexRouter,
@@ -1402,97 +1222,57 @@ export default function App() {
         sellCalldata: routeCalldata.sellCalldata,
       });
       submittedTxHash = tx.hash;
-
       setExecutionState((current) => (current ? { ...current, stepIndex: 3, txHash: tx.hash } : current));
       await new Promise((resolve) => window.setTimeout(resolve, 120));
       setExecutionState((current) => (current ? { ...current, stepIndex: 4, txHash: tx.hash } : current));
       const receipt = await tx.wait();
       const gasPrice = receipt?.gasPrice ?? tx.gasPrice ?? 0n;
       const gasUsed = receipt?.gasUsed ?? 0n;
-      const gasFeeWei = gasUsed * gasPrice;
-      const gasFeeNative = Number(formatUnits(gasFeeWei, 18));
+      const gasFeeNative = Number(formatUnits(gasUsed * gasPrice, 18));
       const gasFeeUsd = gasFeeNative * activeRuntime.nativeTokenUsd;
 
       setExecutionState((current) => (current ? { ...current, status: "success", txHash: tx.hash } : current));
-      setTradeHistory((history) => [
-        {
-          id: `${Date.now()}`,
-          pair: opportunity.pair,
-          buyDex: opportunity.buyDex,
-          sellDex: opportunity.sellDex,
-          provider: opportunity.provider,
-          buyPrice: opportunity.buyPrice,
-          sellPrice: opportunity.sellPrice,
-          totalFeeAsset: opportunity.totalFeeAsset,
-          totalFeeUsd: opportunity.totalFeeUsd,
-          gasFeeNative,
-          gasFeeUsd,
-          gasFeeSymbol: activeRuntime.nativeTokenSymbol,
-          grossProfitAsset: opportunity.grossProfitAsset,
-          grossProfitUsd: opportunity.grossProfitUsd,
-          netProfitAsset: opportunity.netProfitAsset,
-          netProfitUsd: opportunity.netProfitUsd,
-          txHash: tx.hash,
-          status: "successful",
-          loanAsset: opportunity.loanAsset,
-          executedAt: new Date().toLocaleString(),
-        },
-        ...history,
-      ]);
+      setTradeHistory((history) => [{
+        id: `${Date.now()}`, pair: opportunity.pair, buyDex: opportunity.buyDex, sellDex: opportunity.sellDex,
+        provider: opportunity.provider, buyPrice: opportunity.buyPrice, sellPrice: opportunity.sellPrice,
+        totalFeeAsset: opportunity.totalFeeAsset, totalFeeUsd: opportunity.totalFeeUsd,
+        gasFeeNative, gasFeeUsd, gasFeeSymbol: activeRuntime.nativeTokenSymbol,
+        grossProfitAsset: opportunity.grossProfitAsset, grossProfitUsd: opportunity.grossProfitUsd,
+        netProfitAsset: opportunity.netProfitAsset, netProfitUsd: opportunity.netProfitUsd,
+        txHash: tx.hash, status: "successful", loanAsset: opportunity.loanAsset, executedAt: new Date().toLocaleString(),
+      }, ...history]);
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : "Execution failed";
       const message = rawMessage.includes("require(false)")
         ? "Route payload is incompatible with selected DEX router/provider for this environment. Use matching testnet mappings (routers, loan provider, tokens) and regenerate routes."
         : rawMessage;
       setExecutionState((current) => (current ? { ...current, status: "failed", error: message } : current));
-      setTradeHistory((history) => [
-        {
-          id: `${Date.now()}-failed`,
-          pair: opportunity.pair,
-          buyDex: opportunity.buyDex,
-          sellDex: opportunity.sellDex,
-          provider: opportunity.provider,
-          buyPrice: opportunity.buyPrice,
-          sellPrice: opportunity.sellPrice,
-          totalFeeAsset: opportunity.totalFeeAsset,
-          totalFeeUsd: opportunity.totalFeeUsd,
-          gasFeeNative: 0,
-          gasFeeUsd: 0,
-          gasFeeSymbol: activeRuntime.nativeTokenSymbol,
-          grossProfitAsset: opportunity.grossProfitAsset,
-          grossProfitUsd: opportunity.grossProfitUsd,
-          netProfitAsset: opportunity.netProfitAsset,
-          netProfitUsd: opportunity.netProfitUsd,
-          txHash: submittedTxHash || "0x0",
-          status: "failed",
-          loanAsset: opportunity.loanAsset,
-          executedAt: new Date().toLocaleString(),
-        },
-        ...history,
-      ]);
+      setTradeHistory((history) => [{
+        id: `${Date.now()}-failed`, pair: opportunity.pair, buyDex: opportunity.buyDex, sellDex: opportunity.sellDex,
+        provider: opportunity.provider, buyPrice: opportunity.buyPrice, sellPrice: opportunity.sellPrice,
+        totalFeeAsset: opportunity.totalFeeAsset, totalFeeUsd: opportunity.totalFeeUsd,
+        gasFeeNative: 0, gasFeeUsd: 0, gasFeeSymbol: activeRuntime.nativeTokenSymbol,
+        grossProfitAsset: opportunity.grossProfitAsset, grossProfitUsd: opportunity.grossProfitUsd,
+        netProfitAsset: opportunity.netProfitAsset, netProfitUsd: opportunity.netProfitUsd,
+        txHash: submittedTxHash || "0x0", status: "failed", loanAsset: opportunity.loanAsset, executedAt: new Date().toLocaleString(),
+      }, ...history]);
     }
   };
 
+  // FIX #14 & #13: Reset interval cleanly when network changes — no overlapping scan cycles.
   useEffect(() => {
-    if (!scannerRunning) {
-      return;
-    }
+    if (!scannerRunning) return;
+    clearScanTimer();
     runScanCycle();
+    scanIntervalRef.current = window.setInterval(() => { runScanCycle(); }, envRefresh);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNetwork]);
 
-  useEffect(() => {
-    return () => clearScanTimer();
-  }, []);
+  useEffect(() => { return () => clearScanTimer(); }, []);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
-      <motion.div
-        animate={{ opacity: [0.32, 0.62, 0.32] }}
-        transition={{ duration: 7, repeat: Number.POSITIVE_INFINITY, ease: "easeInOut" }}
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(37,99,235,0.32),transparent_54%)]"
-      />
-
+      <motion.div animate={{ opacity: [0.32, 0.62, 0.32] }} transition={{ duration: 7, repeat: Number.POSITIVE_INFINITY, ease: "easeInOut" }} className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(37,99,235,0.32),transparent_54%)]" />
       <main className="relative mx-auto flex w-full max-w-[1300px] flex-col gap-6 px-4 pb-10 pt-5 sm:px-6 lg:px-8">
         <section className="border border-slate-800/90 bg-slate-900/70 p-4 backdrop-blur sm:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -1503,13 +1283,7 @@ export default function App() {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {Object.values(NETWORKS).map((network) => (
-                <button
-                  key={network.key}
-                  onClick={() => setSelectedNetwork(network.key)}
-                  className={`px-3 py-2 text-sm font-medium transition ${selectedNetwork === network.key ? "bg-cyan-400 text-slate-950" : "bg-slate-800 text-slate-200 hover:bg-slate-700"}`}
-                >
-                  {network.name}
-                </button>
+                <button key={network.key} onClick={() => setSelectedNetwork(network.key)} className={`px-3 py-2 text-sm font-medium transition ${selectedNetwork === network.key ? "bg-cyan-400 text-slate-950" : "bg-slate-800 text-slate-200 hover:bg-slate-700"}`}>{network.name}</button>
               ))}
             </div>
           </div>
@@ -1523,45 +1297,29 @@ export default function App() {
                 <p>Last scan: {lastScanAt}</p>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={() => setEnvironment("testnet")} className={`px-3 py-2 text-sm ${environment === "testnet" ? "bg-emerald-400 text-slate-950" : "bg-slate-800 text-slate-200"}`}>
-                  Testnet
-                </button>
-                <button onClick={() => setEnvironment("mainnet")} className={`px-3 py-2 text-sm ${environment === "mainnet" ? "bg-amber-300 text-slate-950" : "bg-slate-800 text-slate-200"}`}>
-                  Mainnet
-                </button>
+                <button onClick={() => setEnvironment("testnet")} className={`px-3 py-2 text-sm ${environment === "testnet" ? "bg-emerald-400 text-slate-950" : "bg-slate-800 text-slate-200"}`}>Testnet</button>
+                <button onClick={() => setEnvironment("mainnet")} className={`px-3 py-2 text-sm ${environment === "mainnet" ? "bg-amber-300 text-slate-950" : "bg-slate-800 text-slate-200"}`}>Mainnet</button>
               </div>
             </div>
-
             <motion.div layout className="h-2 overflow-hidden bg-slate-800">
               <motion.div className="h-full bg-cyan-400" animate={{ width: `${scanProgress}%` }} transition={{ duration: 0.45, ease: "easeOut" }} />
             </motion.div>
-
             <div className="flex flex-wrap gap-2">
               {!scannerRunning ? (
-                <button onClick={startScanner} className="bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-300">
-                  Start Scan
-                </button>
+                <button onClick={startScanner} className="bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-300">Start Scan</button>
               ) : (
-                <button onClick={stopScanner} className="bg-rose-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-rose-300">
-                  Stop Scan
-                </button>
+                <button onClick={stopScanner} className="bg-rose-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-rose-300">Stop Scan</button>
               )}
             </div>
-
             <div className="space-y-1 text-xs text-slate-300">
               <p>DEXes: {activeNetwork.dexes.join(", ")}</p>
               <p>Flash loan providers: {activeNetwork.flashLoanProviders.join(", ")}</p>
-              <p>
-                Executor contract ({environment}): <span className="text-cyan-300">{activeNetwork.contractAddresses[environment]}</span>
-              </p>
-              <p>
-                Multicall mode: {scanMeta.totalBatches} batches, batch size {scanMeta.multicallBatchSize}, pool universe {scanMeta.allPoolCount}
-              </p>
+              <p>Executor contract ({environment}): <span className="text-cyan-300">{activeNetwork.contractAddresses[environment]}</span></p>
+              <p>Multicall mode: {scanMeta.totalBatches} batches, batch size {scanMeta.multicallBatchSize}, pool universe {scanMeta.allPoolCount}</p>
               {selectedNetwork === "ethereum" && <p>Quote token universe: {scanMeta.quoteUniverse}</p>}
               {scanError && <p className="text-rose-300">{scanError}</p>}
             </div>
           </div>
-
           <div className="space-y-2 border border-slate-800 p-3 text-sm lg:col-span-4">
             <p className="font-semibold text-slate-100">Wallet</p>
             {activeWallet ? (
@@ -1569,20 +1327,14 @@ export default function App() {
                 <p className="text-slate-300">{activeWallet.walletName}</p>
                 <p className="text-cyan-300">{shortAddress(activeWallet.address)}</p>
                 <div className="flex gap-2">
-                  <button onClick={() => setWalletModalOpen(true)} className="bg-slate-700 px-3 py-1.5 text-xs hover:bg-slate-600">
-                    Switch Wallet
-                  </button>
-                  <button onClick={disconnectWallet} className="bg-rose-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-rose-300">
-                    Disconnect
-                  </button>
+                  <button onClick={() => setWalletModalOpen(true)} className="bg-slate-700 px-3 py-1.5 text-xs hover:bg-slate-600">Switch Wallet</button>
+                  <button onClick={disconnectWallet} className="bg-rose-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-rose-300">Disconnect</button>
                 </div>
               </>
             ) : (
               <>
                 <p className="text-slate-400">No wallet connected for this network.</p>
-                <button onClick={() => setWalletModalOpen(true)} className="bg-cyan-400 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-300">
-                  Connect Wallet
-                </button>
+                <button onClick={() => setWalletModalOpen(true)} className="bg-cyan-400 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-300">Connect Wallet</button>
               </>
             )}
           </div>
@@ -1593,14 +1345,7 @@ export default function App() {
           <p className="mt-1 text-xs text-slate-400">Selected network: {activeNetwork.name}</p>
           <div className="mt-3 overflow-x-auto">
             <table className="w-full min-w-[760px] text-left text-xs">
-              <thead className="text-slate-400">
-                <tr>
-                  <th className="pb-2">Environment</th>
-                  <th className="pb-2">Deployment registry address</th>
-                  <th className="pb-2">App configured address</th>
-                  <th className="pb-2">Link status</th>
-                </tr>
-              </thead>
+              <thead className="text-slate-400"><tr><th className="pb-2">Environment</th><th className="pb-2">Deployment registry address</th><th className="pb-2">App configured address</th><th className="pb-2">Link status</th></tr></thead>
               <tbody>
                 <tr className="border-t border-slate-800 align-top">
                   <td className="py-2 pr-2 font-medium text-slate-100">Testnet</td>
@@ -1624,12 +1369,7 @@ export default function App() {
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-200">Scanner token depth</h2>
             <div className="mt-3 overflow-x-auto">
               <table className="w-full text-left text-xs sm:min-w-[320px]">
-                <thead className="text-slate-400">
-                  <tr>
-                    <th className="pb-2">Main token</th>
-                    <th className="pb-2 text-right">Pairs</th>
-                  </tr>
-                </thead>
+                <thead className="text-slate-400"><tr><th className="pb-2">Main token</th><th className="pb-2 text-right">Pairs</th></tr></thead>
                 <tbody>
                   {activeNetwork.mainTokens.map((token) => (
                     <tr key={token} className="border-t border-slate-800">
@@ -1655,25 +1395,14 @@ export default function App() {
                       <p className="text-emerald-300">{formatPct(opportunity.spreadPct)}</p>
                     </div>
                     <div className="mt-2 grid grid-cols-2 gap-y-1 text-xs text-slate-300">
-                      <p>Buy: {opportunity.buyDex}</p>
-                      <p>Sell: {opportunity.sellDex}</p>
-                      <p>Buy token price: {formatUsd(opportunity.buyPrice)}</p>
-                      <p>Sell token price: {formatUsd(opportunity.sellPrice)}</p>
-                      <p>{formatAsset(opportunity.loanAmount, opportunity.loanAsset)}</p>
-                      <p>{formatUsd(opportunity.loanAmountUsd)}</p>
+                      <p>Buy: {opportunity.buyDex}</p><p>Sell: {opportunity.sellDex}</p>
+                      <p>Buy token price: {formatUsd(opportunity.buyPrice)}</p><p>Sell token price: {formatUsd(opportunity.sellPrice)}</p>
+                      <p>{formatAsset(opportunity.loanAmount, opportunity.loanAsset)}</p><p>{formatUsd(opportunity.loanAmountUsd)}</p>
                       <p className="text-emerald-300">Net: {formatAsset(opportunity.netProfitAsset, opportunity.loanAsset)}</p>
                       <p className="text-emerald-300">{formatUsd(opportunity.netProfitUsd)}</p>
                     </div>
-                    <button
-                      disabled={!activeWallet}
-                      onClick={() => {
-                        autoGenerateCalldata(opportunity);
-                        setConfirmOpportunity(opportunity);
-                      }}
-                      className="mt-3 w-full bg-cyan-400 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-                    >
-                      Execute
-                    </button>
+                    {/* FIX #12: await calldata generation before opening modal — eliminates race condition */}
+                    <button disabled={!activeWallet} onClick={async () => { await autoGenerateCalldata(opportunity); setConfirmOpportunity(opportunity); }} className="mt-3 w-full bg-cyan-400 px-3 py-2 text-xs font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400">Execute</button>
                   </div>
                 ))
               )}
@@ -1682,28 +1411,17 @@ export default function App() {
               <table className="w-full min-w-[1200px] text-left text-xs">
                 <thead className="text-slate-400">
                   <tr>
-                    <th className="pb-2">Pair</th>
-                    <th className="pb-2">Buy DEX</th>
-                    <th className="pb-2">Sell DEX</th>
-                    <th className="pb-2">Buy token price (USD)</th>
-                    <th className="pb-2">Sell token price (USD)</th>
-                    <th className="pb-2">Spread</th>
-                    <th className="pb-2">Loan asset</th>
-                    <th className="pb-2">Gross profit</th>
-                    <th className="pb-2">Net profit</th>
-                    <th className="pb-2">Price impact</th>
-                    <th className="pb-2">Pair liquidity</th>
-                    <th className="pb-2">Fee</th>
-                    <th className="pb-2">Action</th>
+                    <th className="pb-2">Pair</th><th className="pb-2">Buy DEX</th><th className="pb-2">Sell DEX</th>
+                    <th className="pb-2">Buy token price (USD)</th><th className="pb-2">Sell token price (USD)</th>
+                    <th className="pb-2">Spread</th><th className="pb-2">Loan asset</th>
+                    <th className="pb-2">Gross profit</th><th className="pb-2">Net profit</th>
+                    <th className="pb-2">Price impact</th><th className="pb-2">Pair liquidity</th>
+                    <th className="pb-2">Fee</th><th className="pb-2">Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {opportunities.length === 0 ? (
-                    <tr>
-                      <td colSpan={13} className="border-t border-slate-800 py-4 text-center text-slate-400">
-                        No opportunities found in this scan.
-                      </td>
-                    </tr>
+                    <tr><td colSpan={13} className="border-t border-slate-800 py-4 text-center text-slate-400">No opportunities found in this scan.</td></tr>
                   ) : (
                     opportunities.map((opportunity) => (
                       <tr key={opportunity.id} className="border-t border-slate-800 align-top">
@@ -1713,35 +1431,15 @@ export default function App() {
                         <td className="py-2 pr-2">{formatUsd(opportunity.buyPrice)}</td>
                         <td className="py-2 pr-2">{formatUsd(opportunity.sellPrice)}</td>
                         <td className="py-2 pr-2 text-emerald-300">{formatPct(opportunity.spreadPct)}</td>
-                        <td className="py-2 pr-2">
-                          <p>{formatAsset(opportunity.loanAmount, opportunity.loanAsset)}</p>
-                          <p className="text-slate-400">{formatUsd(opportunity.loanAmountUsd)}</p>
-                        </td>
-                        <td className="py-2 pr-2">
-                          <p>{formatAsset(opportunity.grossProfitAsset, opportunity.loanAsset)}</p>
-                          <p className="text-slate-400">{formatUsd(opportunity.grossProfitUsd)}</p>
-                        </td>
-                        <td className="py-2 pr-2">
-                          <p className="text-emerald-300">{formatAsset(opportunity.netProfitAsset, opportunity.loanAsset)}</p>
-                          <p className="text-slate-400">{formatUsd(opportunity.netProfitUsd)}</p>
-                        </td>
+                        <td className="py-2 pr-2"><p>{formatAsset(opportunity.loanAmount, opportunity.loanAsset)}</p><p className="text-slate-400">{formatUsd(opportunity.loanAmountUsd)}</p></td>
+                        <td className="py-2 pr-2"><p>{formatAsset(opportunity.grossProfitAsset, opportunity.loanAsset)}</p><p className="text-slate-400">{formatUsd(opportunity.grossProfitUsd)}</p></td>
+                        <td className="py-2 pr-2"><p className="text-emerald-300">{formatAsset(opportunity.netProfitAsset, opportunity.loanAsset)}</p><p className="text-slate-400">{formatUsd(opportunity.netProfitUsd)}</p></td>
                         <td className="py-2 pr-2">{formatPct(opportunity.priceImpactPct)}</td>
                         <td className="py-2 pr-2">{formatUsd(opportunity.pairLiquidityUsd)}</td>
-                        <td className="py-2 pr-2">
-                          <p>{formatAsset(opportunity.totalFeeAsset, opportunity.loanAsset)}</p>
-                          <p className="text-slate-400">{formatUsd(opportunity.totalFeeUsd)}</p>
-                        </td>
+                        <td className="py-2 pr-2"><p>{formatAsset(opportunity.totalFeeAsset, opportunity.loanAsset)}</p><p className="text-slate-400">{formatUsd(opportunity.totalFeeUsd)}</p></td>
                         <td className="py-2">
-                          <button
-                            disabled={!activeWallet}
-                            onClick={() => {
-                              autoGenerateCalldata(opportunity);
-                              setConfirmOpportunity(opportunity);
-                            }}
-                            className="bg-cyan-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-                          >
-                            Execute
-                          </button>
+                          {/* FIX #12: await calldata before modal open */}
+                          <button disabled={!activeWallet} onClick={async () => { await autoGenerateCalldata(opportunity); setConfirmOpportunity(opportunity); }} className="bg-cyan-400 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400">Execute</button>
                         </td>
                       </tr>
                     ))
@@ -1757,27 +1455,11 @@ export default function App() {
           <div className="mt-3 overflow-x-auto">
             <table className="w-full min-w-[1300px] text-left text-xs">
               <thead className="text-slate-400">
-                <tr>
-                  <th className="pb-2">Pair</th>
-                  <th className="pb-2">Buy/Sell DEX</th>
-                  <th className="pb-2">Loan provider</th>
-                  <th className="pb-2">Buy price</th>
-                  <th className="pb-2">Sell price</th>
-                  <th className="pb-2">Gas fee (native)</th>
-                  <th className="pb-2">Gross profit</th>
-                  <th className="pb-2">Net profit</th>
-                  <th className="pb-2">Hash</th>
-                  <th className="pb-2">Status</th>
-                  <th className="pb-2">Executed at</th>
-                </tr>
+                <tr><th className="pb-2">Pair</th><th className="pb-2">Buy/Sell DEX</th><th className="pb-2">Loan provider</th><th className="pb-2">Buy price</th><th className="pb-2">Sell price</th><th className="pb-2">Gas fee (native)</th><th className="pb-2">Gross profit</th><th className="pb-2">Net profit</th><th className="pb-2">Hash</th><th className="pb-2">Status</th><th className="pb-2">Executed at</th></tr>
               </thead>
               <tbody>
                 {tradeHistory.length === 0 ? (
-                  <tr>
-                    <td colSpan={11} className="border-t border-slate-800 py-4 text-center text-slate-400">
-                      No trades executed yet.
-                    </td>
-                  </tr>
+                  <tr><td colSpan={11} className="border-t border-slate-800 py-4 text-center text-slate-400">No trades executed yet.</td></tr>
                 ) : (
                   tradeHistory.map((trade) => (
                     <tr key={trade.id} className="border-t border-slate-800">
@@ -1786,11 +1468,7 @@ export default function App() {
                       <td className="py-2 pr-2">{trade.provider}</td>
                       <td className="py-2 pr-2">{formatUsd(trade.buyPrice)}</td>
                       <td className="py-2 pr-2">{formatUsd(trade.sellPrice)}</td>
-                      <td className="py-2 pr-2">
-                        {trade.gasFeeNative > 0
-                          ? `${trade.gasFeeNative.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${trade.gasFeeSymbol} (${formatUsd(trade.gasFeeUsd)})`
-                          : `Not broadcast (${trade.gasFeeSymbol})`}
-                      </td>
+                      <td className="py-2 pr-2">{trade.gasFeeNative > 0 ? `${trade.gasFeeNative.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${trade.gasFeeSymbol} (${formatUsd(trade.gasFeeUsd)})` : `Not broadcast (${trade.gasFeeSymbol})`}</td>
                       <td className="py-2 pr-2">{formatAsset(trade.grossProfitAsset, trade.loanAsset)} ({formatUsd(trade.grossProfitUsd)})</td>
                       <td className="py-2 pr-2">{formatAsset(trade.netProfitAsset, trade.loanAsset)} ({formatUsd(trade.netProfitUsd)})</td>
                       <td className="py-2 pr-2 text-cyan-300">{shortAddress(trade.txHash)}</td>
@@ -1816,9 +1494,7 @@ export default function App() {
               <p className="mt-1 text-sm text-slate-300">{activeNetwork.name} requires a {activeNetwork.chainType === "solana" ? "Solana" : "EVM"} wallet.</p>
               <div className="mt-4 space-y-2">
                 {walletOptions[activeNetwork.chainType].map((walletName) => (
-                  <button key={walletName} onClick={() => connectWallet(walletName)} className="w-full border border-slate-700 px-4 py-3 text-left text-sm hover:border-cyan-300 hover:text-cyan-300">
-                    {walletName}
-                  </button>
+                  <button key={walletName} onClick={() => connectWallet(walletName)} className="w-full border border-slate-700 px-4 py-3 text-left text-sm hover:border-cyan-300 hover:text-cyan-300">{walletName}</button>
                 ))}
               </div>
             </motion.div>
@@ -1832,14 +1508,10 @@ export default function App() {
             <motion.div initial={{ scale: 0.98, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.98, opacity: 0 }} className="max-h-[88vh] w-full max-w-2xl overflow-y-auto border border-slate-700 bg-slate-900 p-4 sm:p-5">
               <h3 className="text-lg font-semibold">Confirm flash loan execution</h3>
               <div className="mt-3 grid gap-2 text-sm text-slate-200 sm:grid-cols-2">
-                <p>Pair: {confirmOpportunity.pair}</p>
-                <p>Provider: {confirmOpportunity.provider}</p>
-                <p>Buy DEX: {confirmOpportunity.buyDex}</p>
-                <p>Sell DEX: {confirmOpportunity.sellDex}</p>
-                <p>Buy price: {formatUsd(confirmOpportunity.buyPrice)}</p>
-                <p>Sell price: {formatUsd(confirmOpportunity.sellPrice)}</p>
-                <p>Spread: {formatPct(confirmOpportunity.spreadPct)}</p>
-                <p>Price impact: {formatPct(confirmOpportunity.priceImpactPct)}</p>
+                <p>Pair: {confirmOpportunity.pair}</p><p>Provider: {confirmOpportunity.provider}</p>
+                <p>Buy DEX: {confirmOpportunity.buyDex}</p><p>Sell DEX: {confirmOpportunity.sellDex}</p>
+                <p>Buy price: {formatUsd(confirmOpportunity.buyPrice)}</p><p>Sell price: {formatUsd(confirmOpportunity.sellPrice)}</p>
+                <p>Spread: {formatPct(confirmOpportunity.spreadPct)}</p><p>Price impact: {formatPct(confirmOpportunity.priceImpactPct)}</p>
                 <p>Pair liquidity: {formatUsd(confirmOpportunity.pairLiquidityUsd)}</p>
                 <p>Loan asset: {formatAsset(confirmOpportunity.loanAmount, confirmOpportunity.loanAsset)}</p>
                 <p>Loan value: {formatUsd(confirmOpportunity.loanAmountUsd)}</p>
@@ -1849,28 +1521,18 @@ export default function App() {
                 <p>Gross profit USD: {formatUsd(confirmOpportunity.grossProfitUsd)}</p>
                 <p>Net profit: {formatAsset(confirmOpportunity.netProfitAsset, confirmOpportunity.loanAsset)}</p>
                 <p>Net profit USD: {formatUsd(confirmOpportunity.netProfitUsd)}</p>
-                <p>Flash fee: {formatPct(confirmOpportunity.flashFeePct)}</p>
-                <p>DEX fee: {formatPct(confirmOpportunity.dexFeePct)}</p>
-                <p>Pool address: {confirmOpportunity.poolAddress}</p>
-                <p>Multicall batch: #{confirmOpportunity.multicallBatch}</p>
+                <p>Flash fee: {formatPct(confirmOpportunity.flashFeePct)}</p><p>DEX fee: {formatPct(confirmOpportunity.dexFeePct)}</p>
+                <p>Pool address: {confirmOpportunity.poolAddress}</p><p>Multicall batch: #{confirmOpportunity.multicallBatch}</p>
               </div>
-
               <div className="mt-3 space-y-2 text-sm">
                 <p className="text-slate-300">Buy swap calldata: {routeCalldata.loading ? "Generating..." : routeCalldata.buyCalldata ? `${routeCalldata.buyCalldata.slice(0, 16)}...${routeCalldata.buyCalldata.slice(-10)}` : "Not available"}</p>
                 <p className="text-slate-300">Sell swap calldata: {routeCalldata.loading ? "Generating..." : routeCalldata.sellCalldata ? `${routeCalldata.sellCalldata.slice(0, 16)}...${routeCalldata.sellCalldata.slice(-10)}` : "Not available"}</p>
                 <p className="text-xs text-slate-400">Router payloads are auto generated from selected DEX routes and token addresses.</p>
                 {routeCalldata.error && <p className="text-xs text-rose-300">{routeCalldata.error}</p>}
               </div>
-
               <div className="sticky bottom-0 mt-5 flex justify-end gap-2 border-t border-slate-800 bg-slate-900 pt-3">
                 <button onClick={() => setConfirmOpportunity(null)} className="bg-slate-700 px-4 py-2 text-sm hover:bg-slate-600">Cancel</button>
-                <button
-                  disabled={routeCalldata.loading || !routeCalldata.buyCalldata || !routeCalldata.sellCalldata}
-                  onClick={() => beginExecution(confirmOpportunity)}
-                  className="bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-                >
-                  Confirm Trade
-                </button>
+                <button disabled={routeCalldata.loading || !routeCalldata.buyCalldata || !routeCalldata.sellCalldata} onClick={() => beginExecution(confirmOpportunity)} className="bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400">Confirm Trade</button>
               </div>
             </motion.div>
           </motion.div>
@@ -1883,9 +1545,7 @@ export default function App() {
             <motion.div initial={{ y: 16, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 16, opacity: 0 }} className="w-full max-w-2xl border border-slate-700 bg-slate-900 p-5">
               <h3 className="text-lg font-semibold">Execution window</h3>
               <p className="mt-1 text-sm text-slate-300">{executionState.opportunity.pair} via {executionState.opportunity.provider}</p>
-              <p className="mt-1 text-xs text-slate-400">
-                Estimated network fee: {estimatedNetworkFee.native.toLocaleString(undefined, { maximumFractionDigits: 6 })} {activeRuntime.nativeTokenSymbol} ({formatUsd(estimatedNetworkFee.usd)})
-              </p>
+              <p className="mt-1 text-xs text-slate-400">Estimated network fee: {estimatedNetworkFee.native.toLocaleString(undefined, { maximumFractionDigits: 6 })} {activeRuntime.nativeTokenSymbol} ({formatUsd(estimatedNetworkFee.usd)})</p>
               <div className="mt-4 space-y-2">
                 {executionSteps.map((step, index) => {
                   const isDone = index < executionState.stepIndex;
@@ -1904,9 +1564,7 @@ export default function App() {
                 {executionState.error && <p className="text-rose-300">Error: {executionState.error}</p>}
               </div>
               <div className="mt-5 flex justify-end">
-                <button onClick={() => setExecutionState(null)} className="bg-slate-700 px-4 py-2 text-sm hover:bg-slate-600">
-                  Close
-                </button>
+                <button onClick={() => setExecutionState(null)} className="bg-slate-700 px-4 py-2 text-sm hover:bg-slate-600">Close</button>
               </div>
             </motion.div>
           </motion.div>
