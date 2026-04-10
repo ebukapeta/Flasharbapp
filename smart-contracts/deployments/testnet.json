@@ -12,7 +12,7 @@
   "arbitrum": {
     "network": "Arbitrum Sepolia",
     "contractFile": "smart-contracts/evm/arbitrum/FlashArbitrageExecutorArbitrum.sol",
-    "executorAddress": "0x2c2e511Ec1A43f2787fD6B40f1C5C9CcAFA7F7B2"
+    "executorAddress": "0x7f1c6738f26d26ae80548436589dde8a4c0f598f"
   },
   "solana": {
     "network": "Solana Devnet",
