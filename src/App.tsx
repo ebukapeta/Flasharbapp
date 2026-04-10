@@ -211,7 +211,7 @@ const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     mainTokens: ["USDC", "USDT", "WETH", "WBTC", "DAI", "ARB"],
     tokenPairDepth: { USDC: 354, USDT: 231, WETH: 278, WBTC: 148, DAI: 159, ARB: 206 },
     contractAddresses: {
-      testnet: "0x2c2e511Ec1A43f2787fD6B40f1C5C9CcAFA7F7B2",
+      testnet: "0x7f1c6738f26d26ae80548436589dde8a4c0f598f",
       mainnet: "0x7bfC4c8f0Df0B53b112D4d51d06Bf763A3d6782D",
     },
   },
