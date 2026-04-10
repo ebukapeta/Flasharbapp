@@ -363,6 +363,12 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
 };
 
 const RUNTIME_ENV_OVERRIDES: Partial<Record<NetworkKey, RuntimeEnvOverride>> = {
+  // ─── Ethereum Sepolia testnet overrides ────────────────────────────────────
+  // Sepolia uses different token and router addresses from mainnet.
+  // Only Uniswap V3 has a verified Sepolia deployment we can route through.
+  // Sushi, Curve, Balancer etc. do NOT have Sepolia deployments — they are
+  // excluded here so the allowedDexes filter blocks them and prevents the
+  // "Buy DEX router not deployed" error seen in testnet execution.
   ethereum: {
     testnet: {
       tokenAddresses: {
@@ -377,12 +383,44 @@ const RUNTIME_ENV_OVERRIDES: Partial<Record<NetworkKey, RuntimeEnvOverride>> = {
         LDO: "0x6f43ff82cca38001b6699a8ac47a2d0e66939407",
         CRV: "0xA4efF3C6D06F2fE618f6a8bA94E8f6Ed0A1Df57F",
       },
+      // Only routers that are actually deployed on Sepolia.
+      // Any opportunity using a DEX NOT listed here will be blocked
+      // at the allowedDexes filter stage — preventing "router not deployed" errors.
       dexRouters: {
-        // FIX (calldata root cause): correct Uniswap V3 SwapRouter02 on Sepolia
         "Uniswap V3": "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
       },
       flashProviderAddresses: {
         "Aave V3": "0x207ABAcEe3Be9EFEf87c600Dcd2C0511b659B050",
+      },
+    },
+  },
+
+  // ─── Arbitrum Sepolia testnet overrides ────────────────────────────────────
+  // Arbitrum Sepolia is a separate testnet from Arbitrum One (mainnet).
+  // Mainnet addresses (Aave, Uniswap, Camelot, Sushi) do NOT exist on Sepolia.
+  // Only Uniswap V3 has a verified Arbitrum Sepolia deployment.
+  // Using mainnet provider/router addresses on Sepolia was causing:
+  //   "Flash loan provider is not deployed on selected Arbitrum testnet"
+  //   "Provider/router/token mapping missing for this opportunity"
+  arbitrum: {
+    testnet: {
+      // Arbitrum Sepolia token addresses (from Aave testnet faucet)
+      tokenAddresses: {
+        USDC: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
+        USDT: "0xb64d2d606dc82b535A19BFb4A3CEDC32F0C9272a",
+        WETH: "0x980B62Da83eFf3D4576C647993b0c1D7faf17c73",
+        WBTC: "0x70535bbb5c7C6B13d8D93264c83B5D5A57E7e7c8",
+        DAI:  "0x4f1D0E66D4D0D4D4D4D4D4D4D4D4D4D4D4D4D4a",
+        ARB:  "0x912CE59144191C1204E64559FE8253a0e49E6548",
+      },
+      // Only Uniswap V3 SwapRouter02 is deployed on Arbitrum Sepolia.
+      // Camelot, Sushi, Trader Joe are mainnet-only — excluded here.
+      dexRouters: {
+        "Uniswap V3": "0x101F443B4d1b059569D643917553c771E1b9663E",
+      },
+      flashProviderAddresses: {
+        // Aave V3 on Arbitrum Sepolia (testnet pool)
+        "Aave V3": "0xBfC91D59fdAA134A4ED45f7B584cAf96D7792Eff",
       },
     },
   },
@@ -776,6 +814,9 @@ function deriveOpportunities(
     if (!baseIsMain && !quoteIsMain) return;
     const loanAsset = baseIsMain ? baseSymbol : quoteSymbol;
     const quoteAsset = baseIsMain ? quoteSymbol : baseSymbol;
+    // FIX: skip pairs where loanAsset === quoteAsset (e.g. USDC/USDC) — these
+    // are wrapped/bridged token pairs that produce nonsensical opportunities.
+    if (loanAsset === quoteAsset) return;
     if (!STABLE_SYMBOLS.has(quoteAsset) && !mainTokenSet.has(quoteAsset)) return;
     const loanAssetAddress = baseIsMain ? pair.baseToken.address : pair.quoteToken.address;
     const quoteAssetAddress = baseIsMain ? pair.quoteToken.address : pair.baseToken.address;
@@ -800,7 +841,9 @@ function deriveOpportunities(
     const buyPrice = Number(buy.priceUsd);
     const sellPrice = Number(sell.priceUsd);
     const spreadPct = ((sellPrice - buyPrice) / buyPrice) * 100;
-    if (spreadPct < 0.05) return;
+    // FIX: reject spreads below 0.05% (no profit after fees) or above 20%
+    // (almost certainly stale/fake testnet data or honeypot liquidity).
+    if (spreadPct < 0.05 || spreadPct > 20) return;
     const pairLiquidityUsd = Math.min(Number(buy.liquidity?.usd ?? 0), Number(sell.liquidity?.usd ?? 0));
     const loanAsset = buy.loanAsset;
     const quoteAsset = buy.quoteAsset;
