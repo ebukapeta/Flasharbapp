@@ -363,12 +363,12 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
 };
 
 const RUNTIME_ENV_OVERRIDES: Partial<Record<NetworkKey, RuntimeEnvOverride>> = {
-  // ─── Ethereum Sepolia testnet overrides ────────────────────────────────────
-  // Sepolia uses different token and router addresses from mainnet.
-  // Only Uniswap V3 has a verified Sepolia deployment we can route through.
-  // Sushi, Curve, Balancer etc. do NOT have Sepolia deployments — they are
-  // excluded here so the allowedDexes filter blocks them and prevents the
-  // "Buy DEX router not deployed" error seen in testnet execution.
+  // ─── Ethereum Sepolia ──────────────────────────────────────────────────────
+  // Sources:
+  //   Uniswap V3 SwapRouter02 Sepolia: docs.uniswap.org/contracts/v3/reference/deployments/ethereum-deployments
+  //   Aave V3 Sepolia Pool: docs.aave.com/developers/deployed-contracts/v3-testnet-addresses
+  //   Sushi, Curve, Balancer, KyberSwap, DODO, ShibaSwap, Bancor, Maverick,
+  //   PancakeSwap V3: NO Sepolia deployments exist — omitted intentionally.
   ethereum: {
     testnet: {
       tokenAddresses: {
@@ -376,55 +376,83 @@ const RUNTIME_ENV_OVERRIDES: Partial<Record<NetworkKey, RuntimeEnvOverride>> = {
         USDC: "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
         WETH: "0xfff9976782d46cc05630d1f6ebab18b2324d6b14",
         WBTC: "0x29f2d40b0605204364af54ec677bd022da425d03",
-        DAI: "0x68194a729C2450ad26072b3D33ADaCbcef39D574",
+        DAI:  "0x68194a729C2450ad26072b3D33ADaCbcef39D574",
         LINK: "0x779877A7B0D9E8603169DdbD7836e478b4624789",
-        UNI: "0x492E85cD024A271C4F19d8F4f2f9A4d6D8f0E2a6",
+        UNI:  "0x492E85cD024A271C4F19d8F4f2f9A4d6D8f0E2a6",
         AAVE: "0x2Ff7B3db4f4A1A5855A84E8D4A0a4Bf54eA04F68",
-        LDO: "0x6f43ff82cca38001b6699a8ac47a2d0e66939407",
-        CRV: "0xA4efF3C6D06F2fE618f6a8bA94E8f6Ed0A1Df57F",
+        LDO:  "0x6f43ff82cca38001b6699a8ac47a2d0e66939407",
+        CRV:  "0xA4efF3C6D06F2fE618f6a8bA94E8f6Ed0A1Df57F",
       },
-      // Only routers that are actually deployed on Sepolia.
-      // Any opportunity using a DEX NOT listed here will be blocked
-      // at the allowedDexes filter stage — preventing "router not deployed" errors.
+      // Only Uniswap V3 is deployed on Sepolia — two fee-tier pools can provide
+      // cross-pool arb opportunities (0.05%, 0.3%, 1% fee tiers).
       dexRouters: {
         "Uniswap V3": "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
       },
       flashProviderAddresses: {
-        "Aave V3": "0x207ABAcEe3Be9EFEf87c600Dcd2C0511b659B050",
+        "Aave V3": "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951",
       },
     },
   },
 
-  // ─── Arbitrum Sepolia testnet overrides ────────────────────────────────────
-  // Arbitrum Sepolia is a separate testnet from Arbitrum One (mainnet).
-  // Mainnet addresses (Aave, Uniswap, Camelot, Sushi) do NOT exist on Sepolia.
-  // Only Uniswap V3 has a verified Arbitrum Sepolia deployment.
-  // Using mainnet provider/router addresses on Sepolia was causing:
-  //   "Flash loan provider is not deployed on selected Arbitrum testnet"
-  //   "Provider/router/token mapping missing for this opportunity"
+  // ─── Arbitrum Sepolia ──────────────────────────────────────────────────────
+  // Sources:
+  //   Uniswap V3 SwapRouter02 Arb Sepolia: docs.uniswap.org/contracts/v3/reference/deployments/arbitrum-deployments
+  //   Aave V3 Arb Sepolia Pool: docs.aave.com/developers/deployed-contracts/v3-testnet-addresses
+  //   Camelot, Sushi, Trader Joe, PancakeSwap V3: mainnet-only, NO Arbitrum Sepolia deployments.
   arbitrum: {
     testnet: {
-      // Arbitrum Sepolia token addresses (from Aave testnet faucet)
       tokenAddresses: {
         USDC: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
         USDT: "0xb64d2d606dc82b535A19BFb4A3CEDC32F0C9272a",
         WETH: "0x980B62Da83eFf3D4576C647993b0c1D7faf17c73",
         WBTC: "0x70535bbb5c7C6B13d8D93264c83B5D5A57E7e7c8",
-        DAI:  "0x4f1D0E66D4D0D4D4D4D4D4D4D4D4D4D4D4D4D4a",
+        DAI:  "0x4F3a120E72C76c22ae802D129F599BFDbc31cb81",
         ARB:  "0x912CE59144191C1204E64559FE8253a0e49E6548",
       },
-      // Only Uniswap V3 SwapRouter02 is deployed on Arbitrum Sepolia.
-      // Camelot, Sushi, Trader Joe are mainnet-only — excluded here.
       dexRouters: {
         "Uniswap V3": "0x101F443B4d1b059569D643917553c771E1b9663E",
       },
       flashProviderAddresses: {
-        // Aave V3 on Arbitrum Sepolia (testnet pool)
         "Aave V3": "0xBfC91D59fdAA134A4ED45f7B584cAf96D7792Eff",
       },
     },
   },
+
+  // ─── Base Sepolia ──────────────────────────────────────────────────────────
+  // Sources:
+  //   Uniswap V3 SwapRouter02 Base Sepolia: docs.uniswap.org/contracts/v3/reference/deployments/base-deployments
+  //   Aave V3 Base Sepolia Pool: docs.aave.com/developers/deployed-contracts/v3-testnet-addresses
+  //   Aerodrome, Sushi, BaseSwap, PancakeSwap V3: mainnet-only on Base, NO Base Sepolia deployments.
+  base: {
+    testnet: {
+      tokenAddresses: {
+        USDC: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        WETH: "0x4200000000000000000000000000000000000006",
+        DAI:  "0x7683022d84F726a96c4A6611cD31DBf5409c0Ac9",
+        USDT: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
+        AERO: "0x6B774240B3a4E7Ec2A4a61Ac5e736d4BC5CCe20f",
+        cbBTC: "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf",
+      },
+      dexRouters: {
+        "Uniswap V3": "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4",
+      },
+      flashProviderAddresses: {
+        "Aave V3": "0xBfC91D59fdAA134A4ED45f7B584cAf96D7792Eff",
+      },
+    },
+  },
+
+  // ─── BSC Testnet (Chapel) ──────────────────────────────────────────────────
+  // Sources:
+  //   Uniswap V3: NOT deployed on BSC testnet at all.
+  //   PancakeSwap V3: Official PancakeSwap does NOT maintain a V3 SmartRouter on
+  //     BSC testnet (Chapel). Community forks exist but have no liquidity.
+  //   Aave V3: NOT deployed on BSC testnet.
+  //   Conclusion: BSC testnet has no supported DEX or flash loan providers.
+  //   BSC testing should be done on mainnet with small amounts, or skipped for testnet.
+  //   No override needed — BSC testnet mode will show 0 opportunities (correct behavior).
 };
+
 
 const GAS_ESTIMATE_CONFIG: Record<NetworkKey, { gasUnits: number; gwei: { testnet: number; mainnet: number } }> = {
   bsc: { gasUnits: 950000, gwei: { testnet: 3, mainnet: 5 } },
@@ -932,10 +960,20 @@ export default function App() {
     if (!override) return baseRuntime;
     return {
       ...baseRuntime, ...override,
+      // tokenAddresses and tokenDecimals merge — only override what differs on testnet.
       tokenAddresses: { ...baseRuntime.tokenAddresses, ...(override.tokenAddresses ?? {}) },
       tokenDecimals: { ...baseRuntime.tokenDecimals, ...(override.tokenDecimals ?? {}) },
-      dexRouters: { ...baseRuntime.dexRouters, ...(override.dexRouters ?? {}) },
-      flashProviderAddresses: { ...baseRuntime.flashProviderAddresses, ...(override.flashProviderAddresses ?? {}) },
+      // dexRouters and flashProviderAddresses REPLACE (not merge) when an override
+      // defines them. This is critical: on testnet, mainnet routers must not leak
+      // through — only the routers listed in the testnet override are valid.
+      // Without this, Curve/Sushi/etc. mainnet addresses appear in the allowed set
+      // and the scanner generates opportunities that always fail with "not deployed".
+      dexRouters: override.dexRouters !== undefined
+        ? override.dexRouters
+        : baseRuntime.dexRouters,
+      flashProviderAddresses: override.flashProviderAddresses !== undefined
+        ? override.flashProviderAddresses
+        : baseRuntime.flashProviderAddresses,
     };
   }, [selectedNetwork, environment]);
 
@@ -1355,8 +1393,16 @@ export default function App() {
               )}
             </div>
             <div className="space-y-1 text-xs text-slate-300">
-              <p>DEXes: {activeNetwork.dexes.join(", ")}</p>
-              <p>Flash loan providers: {activeNetwork.flashLoanProviders.join(", ")}</p>
+              <p>DEXes ({environment}): {
+                Object.keys(activeRuntime.dexRouters).length > 0
+                  ? Object.keys(activeRuntime.dexRouters).join(", ")
+                  : activeNetwork.dexes.join(", ")
+              }</p>
+              <p>Flash loan providers ({environment}): {
+                Object.keys(activeRuntime.flashProviderAddresses).length > 0
+                  ? Object.keys(activeRuntime.flashProviderAddresses).join(", ")
+                  : activeNetwork.flashLoanProviders.join(", ")
+              }</p>
               <p>Executor contract ({environment}): <span className="text-cyan-300">{activeNetwork.contractAddresses[environment]}</span></p>
               <p>Multicall mode: {scanMeta.totalBatches} batches, batch size {scanMeta.multicallBatchSize}, pool universe {scanMeta.allPoolCount}</p>
               {selectedNetwork === "ethereum" && <p>Quote token universe: {scanMeta.quoteUniverse}</p>}
