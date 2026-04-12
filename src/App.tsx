@@ -383,10 +383,12 @@ const RUNTIME_ENV_OVERRIDES: Partial<Record<NetworkKey, RuntimeEnvOverride>> = {
         LDO:  "0x6f43ff82cca38001b6699a8ac47a2d0e66939407",
         CRV:  "0xA4efF3C6D06F2fE618f6a8bA94E8f6Ed0A1Df57F",
       },
-      // Only Uniswap V3 is deployed on Sepolia — two fee-tier pools can provide
-      // cross-pool arb opportunities (0.05%, 0.3%, 1% fee tiers).
+      // Two DEXes with confirmed Sepolia deployments — enables real cross-DEX arb scanning.
+      // Uniswap V3 Universal Router (Sepolia): user-confirmed working
+      // SushiSwap V2 (Sepolia): user-confirmed working
       dexRouters: {
-        "Uniswap V3": "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
+        "Uniswap V3": "0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad",
+        Sushi: "0xeaBcE3E74EF41FB40024a21Cc2ee2F5dDc615791",
       },
       flashProviderAddresses: {
         "Aave V3": "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951",
@@ -394,63 +396,9 @@ const RUNTIME_ENV_OVERRIDES: Partial<Record<NetworkKey, RuntimeEnvOverride>> = {
     },
   },
 
-  // ─── Arbitrum Sepolia ──────────────────────────────────────────────────────
-  // Sources:
-  //   Uniswap V3 SwapRouter02 Arb Sepolia: docs.uniswap.org/contracts/v3/reference/deployments/arbitrum-deployments
-  //   Aave V3 Arb Sepolia Pool: docs.aave.com/developers/deployed-contracts/v3-testnet-addresses
-  //   Camelot, Sushi, Trader Joe, PancakeSwap V3: mainnet-only, NO Arbitrum Sepolia deployments.
-  arbitrum: {
-    testnet: {
-      tokenAddresses: {
-        USDC: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
-        USDT: "0xb64d2d606dc82b535A19BFb4A3CEDC32F0C9272a",
-        WETH: "0x980B62Da83eFf3D4576C647993b0c1D7faf17c73",
-        WBTC: "0x70535bbb5c7C6B13d8D93264c83B5D5A57E7e7c8",
-        DAI:  "0x4F3a120E72C76c22ae802D129F599BFDbc31cb81",
-        ARB:  "0x912CE59144191C1204E64559FE8253a0e49E6548",
-      },
-      dexRouters: {
-        "Uniswap V3": "0x101F443B4d1b059569D643917553c771E1b9663E",
-      },
-      flashProviderAddresses: {
-        "Aave V3": "0xBfC91D59fdAA134A4ED45f7B584cAf96D7792Eff",
-      },
-    },
-  },
-
-  // ─── Base Sepolia ──────────────────────────────────────────────────────────
-  // Sources:
-  //   Uniswap V3 SwapRouter02 Base Sepolia: docs.uniswap.org/contracts/v3/reference/deployments/base-deployments
-  //   Aave V3 Base Sepolia Pool: docs.aave.com/developers/deployed-contracts/v3-testnet-addresses
-  //   Aerodrome, Sushi, BaseSwap, PancakeSwap V3: mainnet-only on Base, NO Base Sepolia deployments.
-  base: {
-    testnet: {
-      tokenAddresses: {
-        USDC: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-        WETH: "0x4200000000000000000000000000000000000006",
-        DAI:  "0x7683022d84F726a96c4A6611cD31DBf5409c0Ac9",
-        USDT: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
-        AERO: "0x6B774240B3a4E7Ec2A4a61Ac5e736d4BC5CCe20f",
-        cbBTC: "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf",
-      },
-      dexRouters: {
-        "Uniswap V3": "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4",
-      },
-      flashProviderAddresses: {
-        "Aave V3": "0xBfC91D59fdAA134A4ED45f7B584cAf96D7792Eff",
-      },
-    },
-  },
-
-  // ─── BSC Testnet (Chapel) ──────────────────────────────────────────────────
-  // Sources:
-  //   Uniswap V3: NOT deployed on BSC testnet at all.
-  //   PancakeSwap V3: Official PancakeSwap does NOT maintain a V3 SmartRouter on
-  //     BSC testnet (Chapel). Community forks exist but have no liquidity.
-  //   Aave V3: NOT deployed on BSC testnet.
-  //   Conclusion: BSC testnet has no supported DEX or flash loan providers.
-  //   BSC testing should be done on mainnet with small amounts, or skipped for testnet.
-  //   No override needed — BSC testnet mode will show 0 opportunities (correct behavior).
+  // Arbitrum, Base, BSC, Solana: testnet mode uses mainnet addresses directly.
+  // These chains either have no confirmed testnet DEX/provider deployments with
+  // real liquidity, or the user is testing on mainnet only. No overrides needed.
 };
 
 
@@ -840,14 +788,25 @@ function deriveOpportunities(
     const baseIsMain = mainTokenSet.has(baseSymbol);
     const quoteIsMain = mainTokenSet.has(quoteSymbol);
     if (!baseIsMain && !quoteIsMain) return;
-    const loanAsset = baseIsMain ? baseSymbol : quoteSymbol;
-    const quoteAsset = baseIsMain ? quoteSymbol : baseSymbol;
-    // FIX: skip pairs where loanAsset === quoteAsset (e.g. USDC/USDC) — these
-    // are wrapped/bridged token pairs that produce nonsensical opportunities.
+    // Determine loanAsset and quoteAsset.
+    // loanAsset = the non-stable main token (the one we flash-loan).
+    // quoteAsset = the stable or secondary token used as the swap intermediary.
+    // If both tokens are mainTokens (e.g. WBNB/WETH), use base as loanAsset.
+    // FIX (BSC no-opportunity bug): When base is a stable (e.g. USDT in USDT/WBNB),
+    // we must swap so the non-stable becomes loanAsset. Otherwise Aave can't flash-
+    // loan USDT, and loan sizing uses the wrong USD price.
+    let loanAsset = baseIsMain ? baseSymbol : quoteSymbol;
+    let quoteAsset = baseIsMain ? quoteSymbol : baseSymbol;
+    let loanAssetAddress = baseIsMain ? pair.baseToken.address : pair.quoteToken.address;
+    let quoteAssetAddress = baseIsMain ? pair.quoteToken.address : pair.baseToken.address;
+    // If loanAsset is a stable but quoteAsset is a mainToken (non-stable), swap them.
+    if (STABLE_SYMBOLS.has(loanAsset) && mainTokenSet.has(quoteAsset) && !STABLE_SYMBOLS.has(quoteAsset)) {
+      [loanAsset, quoteAsset] = [quoteAsset, loanAsset];
+      [loanAssetAddress, quoteAssetAddress] = [quoteAssetAddress, loanAssetAddress];
+    }
+    // Skip same-token pairs (e.g. USDC/USDC bridged versions).
     if (loanAsset === quoteAsset) return;
     if (!STABLE_SYMBOLS.has(quoteAsset) && !mainTokenSet.has(quoteAsset)) return;
-    const loanAssetAddress = baseIsMain ? pair.baseToken.address : pair.quoteToken.address;
-    const quoteAssetAddress = baseIsMain ? pair.quoteToken.address : pair.baseToken.address;
     const key = `${loanAsset}/${quoteAsset}`;
     const bucket = pairBuckets.get(key) ?? [];
     bucket.push({ ...pair, baseSymbol, quoteSymbol, dexName, loanAsset, quoteAsset, loanAssetAddress, quoteAssetAddress });
