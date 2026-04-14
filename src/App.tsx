@@ -78,6 +78,8 @@ interface Opportunity {
   buyPrice: number;
   sellPrice: number;
   spreadPct: number;
+  buyLiquidityUsd: number;
+  sellLiquidityUsd: number;
   pairLiquidityUsd: number;
   priceImpactPct: number;
   flashFeePct: number;
@@ -167,10 +169,10 @@ const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     key: "bsc",
     name: "BNB Smart Chain",
     chainType: "evm",
-    dexes: ["PancakeSwap V3", "THENA", "Biswap", "ApeSwap", "Uniswap V3", "MDEX", "BabySwap", "Wombat"],
+    dexes: ["PancakeSwap V3", "THENA", "Biswap", "ApeSwap", "Uniswap V3", "MDEX", "BabySwap", "Wombat", "KyberSwap", "RadioShack"],
     flashLoanProviders: ["Pancake V3 Flash", "Venus", "Aave V3 (BSC)"],
-    mainTokens: ["USDT", "WBNB", "BTCB", "USDC", "WETH", "WBTC"],
-    tokenPairDepth: { USDT: 226, WBNB: 204, BTCB: 138, USDC: 187, WETH: 141, WBTC: 119 },
+    mainTokens: ["USDT", "WBNB", "BTCB", "USDC", "WETH", "WBTC", "ETH", "DAI", "FDUSD", "XRP"],
+    tokenPairDepth: { USDT: 226, WBNB: 204, BTCB: 138, USDC: 187, WETH: 141, WBTC: 119, ETH: 98, DAI: 112, FDUSD: 87, XRP: 76 },
     contractAddresses: {
       testnet: "0xB5Ff4E4025Ae9E9A2F8a16bE7A9dB2e9B2E8C0a1",
       mainnet: "0x3eE90A5D11C8d53f20952EA19A65A9f0A1F12b8C",
@@ -180,10 +182,10 @@ const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     key: "solana",
     name: "Solana",
     chainType: "solana",
-    dexes: ["Orca", "Raydium CLMM", "Meteora", "Phoenix", "Lifinity", "Saber", "OpenBook", "GooseFX"],
+    dexes: ["Orca", "Raydium CLMM", "Meteora", "Phoenix", "Lifinity", "Saber", "OpenBook", "GooseFX", "Drift", "Marinade"],
     flashLoanProviders: ["Solend", "Marginfi", "Kamino"],
-    mainTokens: ["USDC", "USDT", "WSOL", "MSOL", "JUP", "BONK"],
-    tokenPairDepth: { USDC: 311, USDT: 219, WSOL: 283, MSOL: 127, JUP: 145, BONK: 174 },
+    mainTokens: ["USDC", "USDT", "WSOL", "MSOL", "JUP", "BONK", "RAY", "ORCA", "WIF", "PYTH"],
+    tokenPairDepth: { USDC: 311, USDT: 219, WSOL: 283, MSOL: 127, JUP: 145, BONK: 174, RAY: 98, ORCA: 87, WIF: 112, PYTH: 76 },
     contractAddresses: {
       testnet: "ArbFlash1nDk4hT6wVtestnet8s2Qj5C3iN9qF2k",
       mainnet: "ArbFlashMain8Jx3tP2V7nQ5fY9rL1kD4uE6wZ3c",
@@ -193,10 +195,10 @@ const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     key: "base",
     name: "Base",
     chainType: "evm",
-    dexes: ["Aerodrome", "Uniswap V3", "Sushi", "BaseSwap", "PancakeSwap V3", "Alien Base", "SwapBased", "DackieSwap"],
+    dexes: ["Aerodrome", "Uniswap V3", "Sushi", "BaseSwap", "PancakeSwap V3", "Alien Base", "SwapBased", "DackieSwap", "Maverick", "SynthSwap"],
     flashLoanProviders: ["Aave V3", "Balancer", "Uniswap V3 Flash"],
-    mainTokens: ["USDC", "WETH", "cbBTC", "DAI", "USDT", "AERO"],
-    tokenPairDepth: { USDC: 302, WETH: 248, cbBTC: 117, DAI: 135, USDT: 141, AERO: 167 },
+    mainTokens: ["USDC", "WETH", "cbBTC", "DAI", "USDT", "AERO", "WBTC", "UNI", "LINK", "CRV"],
+    tokenPairDepth: { USDC: 302, WETH: 248, cbBTC: 117, DAI: 135, USDT: 141, AERO: 167, WBTC: 89, UNI: 76, LINK: 94, CRV: 68 },
     contractAddresses: {
       testnet: "0x0A8E03Da1249351C4f6D16a0d33b9d81F6f8A8B3",
       mainnet: "0x112C6F54A5eAA651fC4fEe42cE7606Dc31dAc7d7",
@@ -206,10 +208,10 @@ const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     key: "arbitrum",
     name: "Arbitrum",
     chainType: "evm",
-    dexes: ["Uniswap V3", "Camelot", "Sushi", "Trader Joe", "PancakeSwap V3", "Ramses", "ZyberSwap", "WOOFi"],
+    dexes: ["Uniswap V3", "Camelot", "Sushi", "Trader Joe", "PancakeSwap V3", "Ramses", "ZyberSwap", "WOOFi", "KyberSwap", "Gains Network"],
     flashLoanProviders: ["Aave V3", "Balancer", "Radiant"],
-    mainTokens: ["USDC", "USDT", "WETH", "WBTC", "DAI", "ARB"],
-    tokenPairDepth: { USDC: 354, USDT: 231, WETH: 278, WBTC: 148, DAI: 159, ARB: 206 },
+    mainTokens: ["USDC", "USDT", "WETH", "WBTC", "DAI", "ARB", "LINK", "UNI", "GMX", "PENDLE"],
+    tokenPairDepth: { USDC: 354, USDT: 231, WETH: 278, WBTC: 148, DAI: 159, ARB: 206, LINK: 112, UNI: 87, GMX: 134, PENDLE: 76 },
     contractAddresses: {
       testnet: "0x7f1c6738f26d26ae80548436589dde8a4c0f598f",
       mainnet: "0x7bfC4c8f0Df0B53b112D4d51d06Bf763A3d6782D",
@@ -236,24 +238,34 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
     chainIds: { testnet: "0x61", mainnet: "0x38" },
     dexScreenerChain: "bsc",
     tokenAddresses: {
-      USDT: "0x55d398326f99059fF775485246999027B3197955",
-      WBNB: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
-      BTCB: "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c",
-      USDC: "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
-      WETH: "0x2170Ed0880ac9A755fd29B2688956BD959F933F8",
-      WBTC: "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+      USDT:  "0x55d398326f99059fF775485246999027B3197955",
+      WBNB:  "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
+      BTCB:  "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c",
+      USDC:  "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+      WETH:  "0x2170Ed0880ac9A755fd29B2688956BD959F933F8",
+      WBTC:  "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+      ETH:   "0x2170Ed0880ac9A755fd29B2688956BD959F933F8", // ETH (same as WETH on BSC — Binance-Peg Ethereum)
+      DAI:   "0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3",
+      FDUSD: "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409",
+      XRP:   "0x1D2F0da169ceB9fC7B3144628dB156f3F6c60dBe",
     },
-    tokenDecimals: { USDT: 18, WBNB: 18, BTCB: 18, USDC: 18, WETH: 18, WBTC: 18 },
+    tokenDecimals: { USDT: 18, WBNB: 18, BTCB: 18, USDC: 18, WETH: 18, WBTC: 18, ETH: 18, DAI: 18, FDUSD: 18, XRP: 18 },
     dexRouters: {
       "PancakeSwap V3": "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4",
-      THENA: "0x20a8d7CC0d6A7f8f638b68A8C05A6f54f9c35fCb",
-      Biswap: "0x3a6d8cA21D1Cf76F653A67577FA0D27453350d6D",
-      ApeSwap: "0xC0788A3aD43d79aa53B09c2EaCc313A787d1d607",
+      THENA:            "0x20a8d7CC0d6A7f8f638b68A8C05A6f54f9c35fCb",
+      Biswap:           "0x3a6d8cA21D1Cf76F653A67577FA0D27453350d6D",
+      ApeSwap:          "0xC0788A3aD43d79aa53B09c2EaCc313A787d1d607",
+      "Uniswap V3":     "0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2",
+      MDEX:             "0x7DAe51BD3E3376B8c7c4900E9107f12Be3AF1bA8",
+      BabySwap:         "0x325E343f1dE602396E256B67eFd1F61C3A6B38Bd",
+      Wombat:           "0x19609B03C976CCA288fbDae5c21d4290e9a4aDD7",
+      KyberSwap:        "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+      RadioShack:       "0xDC8Cb92AA6FC7277E3EC32e3f00ad7b8437AE883",
     },
     flashProviderAddresses: {
       "Pancake V3 Flash": "0x46A15B0b27311cedF172AB29E4f4766fbE7F4364",
-      Venus: "0xfD36E2c2a6789Db23113685031d7F16329158384",
-      "Aave V3 (BSC)": "0x6807dc923806fE8Fd134338EABCA509979a7e0cB",
+      Venus:              "0xfD36E2c2a6789Db23113685031d7F16329158384",
+      "Aave V3 (BSC)":   "0x6807dc923806fE8Fd134338EABCA509979a7e0cB",
     },
     nativeTokenSymbol: "BNB",
     nativeTokenUsd: 600,
@@ -265,10 +277,14 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
       USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
       WSOL: "So11111111111111111111111111111111111111112",
       MSOL: "mSoLzYCxHdYgdzUQJ8DhfCsGfG8Q7gW5v5fQ5Q4Wv7w",
-      JUP: "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
+      JUP:  "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
       BONK: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+      RAY:  "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",
+      ORCA: "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE",
+      WIF:  "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+      PYTH: "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3",
     },
-    tokenDecimals: { USDC: 6, USDT: 6, WSOL: 9, MSOL: 9, JUP: 6, BONK: 5 },
+    tokenDecimals: { USDC: 6, USDT: 6, WSOL: 9, MSOL: 9, JUP: 6, BONK: 5, RAY: 6, ORCA: 6, WIF: 6, PYTH: 6 },
     dexRouters: {},
     flashProviderAddresses: {},
     nativeTokenSymbol: "SOL",
@@ -278,23 +294,33 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
     chainIds: { testnet: "0x14a34", mainnet: "0x2105" },
     dexScreenerChain: "base",
     tokenAddresses: {
-      USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-      WETH: "0x4200000000000000000000000000000000000006",
+      USDC:  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      WETH:  "0x4200000000000000000000000000000000000006",
       cbBTC: "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf",
-      DAI: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
-      USDT: "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
-      AERO: "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+      DAI:   "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
+      USDT:  "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
+      AERO:  "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+      WBTC:  "0x0555E30da8f98308EdB960aa94C0Db47230d2B9c",
+      UNI:   "0xc3De830EA07524a0761646a6a4e4be0e114a3C83",
+      LINK:  "0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196",
+      CRV:   "0x8Ee73c484A26e0A5df2Ee2a4960B789967dd0415",
     },
-    tokenDecimals: { USDC: 6, WETH: 18, cbBTC: 8, DAI: 18, USDT: 6, AERO: 18 },
+    tokenDecimals: { USDC: 6, WETH: 18, cbBTC: 8, DAI: 18, USDT: 6, AERO: 18, WBTC: 8, UNI: 18, LINK: 18, CRV: 18 },
     dexRouters: {
-      Aerodrome: "0xcF77a3Ba9A5CA399B7c97c74d54e5b82f6f2F97e",
-      "Uniswap V3": "0x2626664c2603336E57B271c5C0b26F421741e481",
-      Sushi: "0x6BDED42c6DA8FBF0d2bA55B2fa120C5e0c8D7891",
-      BaseSwap: "0x327Df1E6de05895d2ab08513aaDD9313Fe505d86",
+      Aerodrome:        "0xcF77a3Ba9A5CA399B7c97c74d54e5b82f6f2F97e",
+      "Uniswap V3":     "0x2626664c2603336E57B271c5C0b26F421741e481",
+      Sushi:            "0x6BDED42c6DA8FBF0d2bA55B2fa120C5e0c8D7891",
+      BaseSwap:         "0x327Df1E6de05895d2ab08513aaDD9313Fe505d86",
+      "PancakeSwap V3": "0x678Aa4bF4E210cf2166753e054d5b7c31cc7fa86",
+      "Alien Base":     "0x8c1A3cF8f83074169FE5D7aD50B978e1cD6b37c6",
+      SwapBased:        "0xaaa3b1F1fb7659B03F197F1e81Ce0ecBCf1fb7e3",
+      DackieSwap:       "0x76d8B88d7D338f46aD7A3f09c76bB99e5Fe0Fd07",
+      Maverick:         "0x32AED3Bce901DA12ca8489788F3A99fCe1056e14",
+      SynthSwap:        "0x8734B3264Dbd22F899545dc3710E37b3B624e43B",
     },
     flashProviderAddresses: {
-      "Aave V3": "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5",
-      Balancer: "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
+      "Aave V3":          "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5",
+      Balancer:           "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
       "Uniswap V3 Flash": "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
     },
     nativeTokenSymbol: "ETH",
@@ -304,24 +330,34 @@ const RUNTIME: Record<NetworkKey, RuntimeChainConfig> = {
     chainIds: { testnet: "0x66eee", mainnet: "0xa4b1" },
     dexScreenerChain: "arbitrum",
     tokenAddresses: {
-      USDC: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
-      USDT: "0xFd086bC7CD5C481DCC9C85ebe478A1C0b69FCbb9",
-      WETH: "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-      WBTC: "0x2f2a2543b76a4166549f7aaab2e75b2fD5D8Ccf7",
-      DAI: "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1",
-      ARB: "0x912CE59144191C1204E64559FE8253a0e49E6548",
+      USDC:   "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+      USDT:   "0xFd086bC7CD5C481DCC9C85ebe478A1C0b69FCbb9",
+      WETH:   "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+      WBTC:   "0x2f2a2543b76a4166549f7aaab2e75b2fD5D8Ccf7",
+      DAI:    "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1",
+      ARB:    "0x912CE59144191C1204E64559FE8253a0e49E6548",
+      LINK:   "0xf97f4df75117a78c1A5a0DBb814Af92458539FB4",
+      UNI:    "0xFa7F8980b0f1E64A2062791cc3b0871572f1F7f0",
+      GMX:    "0xfc5A1A6EB076a2C7aD06eD22C90d7E710E35ad0a",
+      PENDLE: "0x0c880f6761F1af8d9Aa9C466984b80DAb9a8c9e8",
     },
-    tokenDecimals: { USDC: 6, USDT: 6, WETH: 18, WBTC: 8, DAI: 18, ARB: 18 },
+    tokenDecimals: { USDC: 6, USDT: 6, WETH: 18, WBTC: 8, DAI: 18, ARB: 18, LINK: 18, UNI: 18, GMX: 18, PENDLE: 18 },
     dexRouters: {
-      "Uniswap V3": "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
-      Camelot: "0xc873fEcbd354f5A56E00E710B90EF4201db2448d",
-      Sushi: "0x1b02da8cb0d097eb8d57a175b88c7d8b47997506",
-      "Trader Joe": "0xb4315e873dbcf96ffd0acd8ea43f689d8c20fb30",
+      "Uniswap V3":      "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+      Camelot:           "0xc873fEcbd354f5A56E00E710B90EF4201db2448d",
+      Sushi:             "0x1b02da8cb0d097eb8d57a175b88c7d8b47997506",
+      "Trader Joe":      "0xb4315e873dbcf96ffd0acd8ea43f689d8c20fb30",
+      "PancakeSwap V3":  "0x32226588378236fd0c7c4053999f88ac0e5cac77",
+      Ramses:            "0xAAA87963EFeB6f7E0a2711F397663105Acb1805e",
+      ZyberSwap:         "0xfa58b8024B49836772180f2Df902f231ba712F72",
+      WOOFi:             "0x9aEd3A8896A85FE9a8CAc52C9B402D092B629a30",
+      KyberSwap:         "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5",
+      "Gains Network":   "0x7Ca285B6a4b08BF3Df80B1c3f98Fc054EdA6F6b9",
     },
     flashProviderAddresses: {
       "Aave V3": "0x794a61358D6845594F94dc1DB02A252b5b4814aD",
-      Balancer: "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
-      Radiant: "0x48B08F3f61d8D4F89cA55Db1Bf2f2D6D9A5c4A3d",
+      Balancer:  "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
+      Radiant:   "0x48B08F3f61d8D4F89cA55Db1Bf2f2D6D9A5c4A3d",
     },
     nativeTokenSymbol: "ETH",
     nativeTokenUsd: 3200,
@@ -444,6 +480,8 @@ const DEX_STYLE: Record<NetworkKey, Record<string, "v2" | "v3">> = {
     MDEX: "v2",
     BabySwap: "v2",
     Wombat: "v2",
+    KyberSwap: "v3",
+    RadioShack: "v2",
   },
   base: {
     Aerodrome: "v2",
@@ -454,6 +492,8 @@ const DEX_STYLE: Record<NetworkKey, Record<string, "v2" | "v3">> = {
     "Alien Base": "v2",
     SwapBased: "v2",
     DackieSwap: "v2",
+    Maverick: "v3",
+    SynthSwap: "v2",
   },
   arbitrum: {
     "Uniswap V3": "v3",
@@ -464,6 +504,8 @@ const DEX_STYLE: Record<NetworkKey, Record<string, "v2" | "v3">> = {
     Ramses: "v2",
     ZyberSwap: "v2",
     WOOFi: "v2",
+    KyberSwap: "v3",
+    "Gains Network": "v2",
   },
   ethereum: {
     "Uniswap V3": "v3",
@@ -524,6 +566,9 @@ const DEX_ID_ALIASES: Record<NetworkKey, Record<string, string>> = {
     mdex: "MDEX",
     babyswap: "BabySwap",
     wombat: "Wombat",
+    kyberswap: "KyberSwap",
+    "kyberswap-elastic": "KyberSwap",
+    radioshack: "RadioShack",
   },
   solana: {
     orca: "Orca",
@@ -550,6 +595,9 @@ const DEX_ID_ALIASES: Record<NetworkKey, Record<string, string>> = {
     "alien-base": "Alien Base",
     swapbased: "SwapBased",
     dackieswap: "DackieSwap",
+    maverick: "Maverick",
+    "maverick-v2": "Maverick",
+    synthswap: "SynthSwap",
   },
   arbitrum: {
     uniswap: "Uniswap V3",
@@ -567,6 +615,10 @@ const DEX_ID_ALIASES: Record<NetworkKey, Record<string, string>> = {
     ramses: "Ramses",
     zyberswap: "ZyberSwap",
     woofi: "WOOFi",
+    kyberswap: "KyberSwap",
+    "kyberswap-elastic": "KyberSwap",
+    "gains-network": "Gains Network",
+    gains: "Gains Network",
   },
   ethereum: {
     uniswap: "Uniswap V3",
@@ -589,10 +641,10 @@ const DEX_ID_ALIASES: Record<NetworkKey, Record<string, string>> = {
 const STABLE_SYMBOLS = new Set(["USDT", "USDC", "DAI", "FDUSD", "BUSD", "USDE", "USDBC"]);
 
 const MAIN_TOKEN_USD_FALLBACKS: Record<NetworkKey, Record<string, number>> = {
-  bsc: { USDT: 1, USDC: 1, WBNB: 600, BTCB: 68000, WETH: 3200, WBTC: 68000 },
-  solana: { USDC: 1, USDT: 1, WSOL: 145, MSOL: 165, JUP: 1.2, BONK: 0.000025 },
-  base: { USDC: 1, USDT: 1, DAI: 1, WETH: 3200, cbBTC: 68000, AERO: 1.4 },
-  arbitrum: { USDC: 1, USDT: 1, DAI: 1, WETH: 3200, WBTC: 68000, ARB: 1.1 },
+  bsc:      { USDT: 1, USDC: 1, WBNB: 600, BTCB: 68000, WETH: 3200, WBTC: 68000, ETH: 3200, DAI: 1, FDUSD: 1, XRP: 0.55 },
+  solana:   { USDC: 1, USDT: 1, WSOL: 145, MSOL: 165, JUP: 1.2, BONK: 0.000025, RAY: 2.1, ORCA: 0.9, WIF: 2.5, PYTH: 0.4 },
+  base:     { USDC: 1, USDT: 1, DAI: 1, WETH: 3200, cbBTC: 68000, AERO: 1.4, WBTC: 68000, UNI: 8, LINK: 18, CRV: 0.55 },
+  arbitrum: { USDC: 1, USDT: 1, DAI: 1, WETH: 3200, WBTC: 68000, ARB: 1.1, LINK: 18, UNI: 8, GMX: 22, PENDLE: 3.5 },
   ethereum: { USDC: 1, USDT: 1, DAI: 1, WETH: 3200, WBTC: 68000, LINK: 18, UNI: 8, AAVE: 110, LDO: 2, CRV: 0.55 },
 };
 
@@ -834,7 +886,9 @@ function deriveOpportunities(
     // FIX: reject spreads below 0.05% (no profit after fees) or above 20%
     // (almost certainly stale/fake testnet data or honeypot liquidity).
     if (spreadPct < 0.05 || spreadPct > 20) return;
-    const pairLiquidityUsd = Math.min(Number(buy.liquidity?.usd ?? 0), Number(sell.liquidity?.usd ?? 0));
+    const buyLiquidityUsd = Number(buy.liquidity?.usd ?? 0);
+    const sellLiquidityUsd = Number(sell.liquidity?.usd ?? 0);
+    const pairLiquidityUsd = Math.min(buyLiquidityUsd, sellLiquidityUsd);
     const loanAsset = buy.loanAsset;
     const quoteAsset = buy.quoteAsset;
     const loanAssetUsd = mainTokenUsd.get(loanAsset) ?? 1;
@@ -858,6 +912,8 @@ function deriveOpportunities(
       buyPrice,
       sellPrice,
       spreadPct,
+      buyLiquidityUsd,
+      sellLiquidityUsd,
       pairLiquidityUsd,
       priceImpactPct,
       flashFeePct,
@@ -1384,6 +1440,9 @@ export default function App() {
                   : activeNetwork.flashLoanProviders.join(", ")
               }</p>
               <p>Executor contract ({effectiveEnvironment}): <span className="text-cyan-300">{activeNetwork.contractAddresses[effectiveEnvironment]}</span></p>
+              {activeNetwork.chainType === "evm" && (
+                <p>Estimated gas: {estimatedNetworkFee.native.toLocaleString(undefined, { maximumFractionDigits: 6 })} {activeRuntime.nativeTokenSymbol} (<span className="text-amber-300">{formatUsd(estimatedNetworkFee.usd)}</span>)</p>
+              )}
               <p>Multicall mode: {scanMeta.totalBatches} batches, batch size {scanMeta.multicallBatchSize}, pool universe {scanMeta.allPoolCount}</p>
               {selectedNetwork === "ethereum" && <p>Quote token universe: {scanMeta.quoteUniverse}</p>}
               {scanError && <p className="text-rose-300">{scanError}</p>}
@@ -1416,12 +1475,15 @@ export default function App() {
             <table className="w-full min-w-[760px] text-left text-xs">
               <thead className="text-slate-400"><tr><th className="pb-2">Environment</th><th className="pb-2">Deployment registry address</th><th className="pb-2">App configured address</th><th className="pb-2">Link status</th></tr></thead>
               <tbody>
-                <tr className="border-t border-slate-800 align-top">
-                  <td className="py-2 pr-2 font-medium text-slate-100">Testnet</td>
-                  <td className="py-2 pr-2 text-cyan-300">{activeTestnetDeploymentAddress}</td>
-                  <td className="py-2 pr-2 text-cyan-300">{activeNetwork.contractAddresses.testnet}</td>
-                  <td className={`py-2 font-semibold ${activeTestnetLinked ? "text-emerald-300" : "text-rose-300"}`}>{activeTestnetLinked ? "Linked" : "Mismatch"}</td>
-                </tr>
+                {/* Testnet row — only shown for Ethereum which has a deployed testnet contract */}
+                {selectedNetwork === "ethereum" && (
+                  <tr className="border-t border-slate-800 align-top">
+                    <td className="py-2 pr-2 font-medium text-slate-100">Testnet</td>
+                    <td className="py-2 pr-2 text-cyan-300">{activeTestnetDeploymentAddress}</td>
+                    <td className="py-2 pr-2 text-cyan-300">{activeNetwork.contractAddresses.testnet}</td>
+                    <td className={`py-2 font-semibold ${activeTestnetLinked ? "text-emerald-300" : "text-rose-300"}`}>{activeTestnetLinked ? "Linked" : "Mismatch"}</td>
+                  </tr>
+                )}
                 <tr className="border-t border-slate-800 align-top">
                   <td className="py-2 pr-2 font-medium text-slate-100">Mainnet</td>
                   <td className="py-2 pr-2 text-cyan-300">{activeMainnetDeploymentAddress}</td>
@@ -1465,7 +1527,9 @@ export default function App() {
                     </div>
                     <div className="mt-2 grid grid-cols-2 gap-y-1 text-xs text-slate-300">
                       <p>Buy: {opportunity.buyDex}</p><p>Sell: {opportunity.sellDex}</p>
-                      <p>Buy token price: {formatUsd(opportunity.buyPrice)}</p><p>Sell token price: {formatUsd(opportunity.sellPrice)}</p>
+                      <p>Buy price: {formatUsd(opportunity.buyPrice)}</p><p>Sell price: {formatUsd(opportunity.sellPrice)}</p>
+                      <p className="text-slate-400">Buy liq: {formatUsd(opportunity.buyLiquidityUsd)}</p>
+                      <p className="text-slate-400">Sell liq: {formatUsd(opportunity.sellLiquidityUsd)}</p>
                       <p>{formatAsset(opportunity.loanAmount, opportunity.loanAsset)}</p><p>{formatUsd(opportunity.loanAmountUsd)}</p>
                       <p className="text-emerald-300">Net: {formatAsset(opportunity.netProfitAsset, opportunity.loanAsset)}</p>
                       <p className="text-emerald-300">{formatUsd(opportunity.netProfitUsd)}</p>
@@ -1481,16 +1545,17 @@ export default function App() {
                 <thead className="text-slate-400">
                   <tr>
                     <th className="pb-2">Pair</th><th className="pb-2">Buy DEX</th><th className="pb-2">Sell DEX</th>
-                    <th className="pb-2">Buy token price (USD)</th><th className="pb-2">Sell token price (USD)</th>
+                    <th className="pb-2">Buy price</th><th className="pb-2">Sell price</th>
                     <th className="pb-2">Spread</th><th className="pb-2">Loan asset</th>
                     <th className="pb-2">Gross profit</th><th className="pb-2">Net profit</th>
-                    <th className="pb-2">Price impact</th><th className="pb-2">Pair liquidity</th>
+                    <th className="pb-2">Price impact</th>
+                    <th className="pb-2">Buy DEX liquidity</th><th className="pb-2">Sell DEX liquidity</th>
                     <th className="pb-2">Fee</th><th className="pb-2">Action</th>
                   </tr>
                 </thead>
                 <tbody>
                   {opportunities.length === 0 ? (
-                    <tr><td colSpan={13} className="border-t border-slate-800 py-4 text-center text-slate-400">No opportunities found in this scan.</td></tr>
+                    <tr><td colSpan={14} className="border-t border-slate-800 py-4 text-center text-slate-400">No opportunities found in this scan.</td></tr>
                   ) : (
                     opportunities.map((opportunity) => (
                       <tr key={opportunity.id} className="border-t border-slate-800 align-top">
@@ -1504,7 +1569,8 @@ export default function App() {
                         <td className="py-2 pr-2"><p>{formatAsset(opportunity.grossProfitAsset, opportunity.loanAsset)}</p><p className="text-slate-400">{formatUsd(opportunity.grossProfitUsd)}</p></td>
                         <td className="py-2 pr-2"><p className="text-emerald-300">{formatAsset(opportunity.netProfitAsset, opportunity.loanAsset)}</p><p className="text-slate-400">{formatUsd(opportunity.netProfitUsd)}</p></td>
                         <td className="py-2 pr-2">{formatPct(opportunity.priceImpactPct)}</td>
-                        <td className="py-2 pr-2">{formatUsd(opportunity.pairLiquidityUsd)}</td>
+                        <td className="py-2 pr-2">{formatUsd(opportunity.buyLiquidityUsd)}</td>
+                        <td className="py-2 pr-2">{formatUsd(opportunity.sellLiquidityUsd)}</td>
                         <td className="py-2 pr-2"><p>{formatAsset(opportunity.totalFeeAsset, opportunity.loanAsset)}</p><p className="text-slate-400">{formatUsd(opportunity.totalFeeUsd)}</p></td>
                         <td className="py-2">
                           {/* FIX #12: await calldata before modal open */}
@@ -1581,7 +1647,8 @@ export default function App() {
                 <p>Buy DEX: {confirmOpportunity.buyDex}</p><p>Sell DEX: {confirmOpportunity.sellDex}</p>
                 <p>Buy price: {formatUsd(confirmOpportunity.buyPrice)}</p><p>Sell price: {formatUsd(confirmOpportunity.sellPrice)}</p>
                 <p>Spread: {formatPct(confirmOpportunity.spreadPct)}</p><p>Price impact: {formatPct(confirmOpportunity.priceImpactPct)}</p>
-                <p>Pair liquidity: {formatUsd(confirmOpportunity.pairLiquidityUsd)}</p>
+                <p>Buy DEX liquidity: {formatUsd(confirmOpportunity.buyLiquidityUsd)}</p>
+                <p>Sell DEX liquidity: {formatUsd(confirmOpportunity.sellLiquidityUsd)}</p>
                 <p>Loan asset: {formatAsset(confirmOpportunity.loanAmount, confirmOpportunity.loanAsset)}</p>
                 <p>Loan value: {formatUsd(confirmOpportunity.loanAmountUsd)}</p>
                 <p>Protocol fee: {formatAsset(confirmOpportunity.totalFeeAsset, confirmOpportunity.loanAsset)}</p>
