@@ -752,7 +752,8 @@ function deriveOpportunities(
     const price = Number(pair.priceUsd);
     const baseIsMain = mainTokenSet.has(baseSymbol);
     const quoteIsMain = mainTokenSet.has(quoteSymbol);
-    if ((!baseIsMain && !quoteIsMain) || !Number.isFinite(price) || price <= 0 || liquidity < 80000) return;
+    const oracleLiqMin = networkKey === "bsc" ? 20000 : 80000;
+    if ((!baseIsMain && !quoteIsMain) || !Number.isFinite(price) || price <= 0 || liquidity < oracleLiqMin) return;
     const mainSymbol = baseIsMain ? baseSymbol : quoteSymbol;
     const stableSymbol = baseIsMain ? quoteSymbol : baseSymbol;
     if (!STABLE_SYMBOLS.has(stableSymbol)) return;
@@ -780,7 +781,9 @@ function deriveOpportunities(
   pairs.forEach((pair) => {
     const price = Number(pair.priceUsd);
     const liquidity = Number(pair.liquidity?.usd ?? 0);
-    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(liquidity) || liquidity < 30000) return;
+    // Lower liquidity minimum for BSC where many real pools have lower USD value
+    const bucketLiqMin = networkKey === "bsc" ? 10000 : 30000;
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(liquidity) || liquidity < bucketLiqMin) return;
     const baseSymbol = symbolCleanup(pair.baseToken.symbol);
     const quoteSymbol = symbolCleanup(pair.quoteToken.symbol);
     const dexName = normalizeDexName(networkKey, pair.dexId);
@@ -913,9 +916,11 @@ export default function App() {
   const estimatedNetworkFeeRef = useRef({ native: 0, usd: 0 });
 
   const activeNetwork = useMemo(() => NETWORKS[selectedNetwork], [selectedNetwork]);
+  // Non-ethereum chains have no usable testnet — always treat them as mainnet.
+  const effectiveEnvironment: EnvMode = selectedNetwork !== "ethereum" ? "mainnet" : environment;
   const activeRuntime = useMemo(() => {
     const baseRuntime = RUNTIME[selectedNetwork];
-    const override = RUNTIME_ENV_OVERRIDES[selectedNetwork]?.[environment];
+    const override = RUNTIME_ENV_OVERRIDES[selectedNetwork]?.[effectiveEnvironment];
     if (!override) return baseRuntime;
     return {
       ...baseRuntime, ...override,
@@ -934,7 +939,7 @@ export default function App() {
         ? override.flashProviderAddresses
         : baseRuntime.flashProviderAddresses,
     };
-  }, [selectedNetwork, environment]);
+  }, [selectedNetwork, effectiveEnvironment]);
 
   const activeWallet = walletsByNetwork[selectedNetwork];
   const tokenDepthForNetwork = liveTokenDepth[selectedNetwork] ?? activeNetwork.tokenPairDepth;
@@ -946,12 +951,19 @@ export default function App() {
   const estimatedNetworkFee = useMemo(() => {
     const config = GAS_ESTIMATE_CONFIG[selectedNetwork];
     if (activeNetwork.chainType !== "evm") return { native: 0, usd: 0 };
-    const native = config.gasUnits * config.gwei[environment] * 1e-9;
+    const native = config.gasUnits * config.gwei[effectiveEnvironment] * 1e-9;
     return { native, usd: native * activeRuntime.nativeTokenUsd };
-  }, [activeNetwork.chainType, activeRuntime.nativeTokenUsd, environment, selectedNetwork]);
+  }, [activeNetwork.chainType, activeRuntime.nativeTokenUsd, effectiveEnvironment, selectedNetwork]);
 
   // FIX #6: Keep refs synced so interval callbacks always have fresh values.
   useEffect(() => { selectedNetworkRef.current = selectedNetwork; }, [selectedNetwork]);
+  // When switching to a non-ethereum network, snap environment to mainnet
+  // (those chains have no testnet deployments — testnet button is also hidden).
+  useEffect(() => {
+    if (selectedNetwork !== "ethereum" && environment === "testnet") {
+      setEnvironment("mainnet");
+    }
+  }, [selectedNetwork]);
   useEffect(() => { activeRuntimeRef.current = activeRuntime; }, [activeRuntime]);
   useEffect(() => { activeNetworkRef.current = activeNetwork; }, [activeNetwork]);
   useEffect(() => { estimatedNetworkFeeRef.current = estimatedNetworkFee; }, [estimatedNetworkFee]);
@@ -973,9 +985,11 @@ export default function App() {
     const tokenEntries = Object.entries(currentRuntime.tokenAddresses);
     const tokens = tokenEntries.map(([, address]) => address);
     const batchSize = 24;
-    const expansionLimit = currentNetwork === "ethereum" ? 420 : 140;
-    const expansionLiquidityMin = currentNetwork === "ethereum" ? 40000 : 80000;
-    const depthFloor = currentNetwork === "ethereum" ? 1000 : 500;
+    // No expansion limit — fetch all pairs for every discovered quote token.
+    // expansionLiquidityMin lowered so BSC and other chains with moderate liquidity aren't excluded.
+    const expansionLiquidityMin = 20000;
+    // depthFloor removed — show real live pair counts, not an artificial minimum.
+    const depthFloor = 0;
 
     try {
       // FIX #5: Promise.allSettled so a single failed token fetch doesn't wipe the whole scan.
@@ -996,8 +1010,7 @@ export default function App() {
             if (mainTokenAddresses.has(quoteAddress) && !mainTokenAddresses.has(baseAddress)) return pair.baseToken.address;
             return "";
           })
-          .filter((address) => address !== "")
-          .slice(0, expansionLimit),
+          .filter((address) => address !== ""),
       ));
 
       const expansionPairs = expansionTokenAddresses.length > 0
@@ -1090,7 +1103,7 @@ export default function App() {
 
   const connectEvmWallet = async (walletName: string) => {
     if (!window.ethereum) throw new Error("No EVM wallet detected in browser.");
-    const targetChainId = getTargetEvmChainId(selectedNetwork, environment);
+    const targetChainId = getTargetEvmChainId(selectedNetwork, effectiveEnvironment);
     if (targetChainId) {
       try { await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: targetChainId }] }); } catch { /* Continue */ }
     }
@@ -1149,7 +1162,7 @@ export default function App() {
     setRouteCalldata({ buyCalldata: "", sellCalldata: "", loading: true, error: "" });
     try {
       if (activeNetwork.chainType === "evm") {
-        const contractAddress = sanitizeEvmAddress(activeNetwork.contractAddresses[environment]);
+        const contractAddress = sanitizeEvmAddress(activeNetwork.contractAddresses[effectiveEnvironment]);
         const loanAssetAddressRaw = activeRuntime.tokenAddresses[opportunity.loanAsset] ?? opportunity.loanAssetAddress;
         const quoteAssetAddressRaw = activeRuntime.tokenAddresses[opportunity.quoteAsset] ?? opportunity.quoteAssetAddress;
         if (!loanAssetAddressRaw || !quoteAssetAddressRaw || !loanAssetAddressRaw.startsWith("0x") || !quoteAssetAddressRaw.startsWith("0x")) {
@@ -1205,12 +1218,12 @@ export default function App() {
       const buyDexRouter = sanitizeEvmAddress(buyDexRouterRaw);
       const sellDexRouter = sanitizeEvmAddress(sellDexRouterRaw);
       const tokenDecimals = activeRuntime.tokenDecimals[opportunity.loanAsset] ?? 18;
-      const contractAddress = sanitizeEvmAddress(activeNetwork.contractAddresses[environment]);
+      const contractAddress = sanitizeEvmAddress(activeNetwork.contractAddresses[effectiveEnvironment]);
       const loanAmount = parseUnits(opportunity.loanAmount.toFixed(Math.min(tokenDecimals, 6)), tokenDecimals);
       const minProfit = parseUnits((opportunity.netProfitAsset * 0.5).toFixed(Math.min(tokenDecimals, 6)), tokenDecimals);
 
       setExecutionState((current) => (current ? { ...current, stepIndex: 2 } : current));
-      const targetChainId = getTargetEvmChainId(selectedNetwork, environment);
+      const targetChainId = getTargetEvmChainId(selectedNetwork, effectiveEnvironment);
       if (targetChainId) {
         try { await window.ethereum?.request({ method: "wallet_switchEthereumChain", params: [{ chainId: targetChainId }] }); } catch { /* Continue */ }
       }
@@ -1220,7 +1233,7 @@ export default function App() {
       // FIX #17: only compare when targetChainId is defined; use safe BigInt conversion.
       if (targetChainId !== undefined) {
         const expectedChainId = BigInt(targetChainId);
-        if (signerNetwork.chainId !== expectedChainId) throw new Error(`Wrong wallet network. Switch wallet to ${activeNetwork.name} ${environment} and retry.`);
+        if (signerNetwork.chainId !== expectedChainId) throw new Error(`Wrong wallet network. Switch wallet to ${activeNetwork.name} ${effectiveEnvironment} and retry.`);
       }
 
       const ensureAddressHasCode = async (address: string, label: string) => {
@@ -1337,8 +1350,16 @@ export default function App() {
                 <p>Last scan: {lastScanAt}</p>
               </div>
               <div className="flex items-center gap-2">
-                <button onClick={() => setEnvironment("testnet")} className={`px-3 py-2 text-sm ${environment === "testnet" ? "bg-emerald-400 text-slate-950" : "bg-slate-800 text-slate-200"}`}>Testnet</button>
-                <button onClick={() => setEnvironment("mainnet")} className={`px-3 py-2 text-sm ${environment === "mainnet" ? "bg-amber-300 text-slate-950" : "bg-slate-800 text-slate-200"}`}>Mainnet</button>
+                {/* Testnet toggle only shown for Ethereum — other chains have no usable testnet DEX deployments */}
+                {selectedNetwork === "ethereum" && (
+                  <button onClick={() => setEnvironment("testnet")} className={`px-3 py-2 text-sm ${environment === "testnet" ? "bg-emerald-400 text-slate-950" : "bg-slate-800 text-slate-200"}`}>Testnet</button>
+                )}
+                <button
+                  onClick={() => setEnvironment("mainnet")}
+                  className={`px-3 py-2 text-sm ${environment === "mainnet" ? "bg-amber-300 text-slate-950" : selectedNetwork !== "ethereum" ? "bg-amber-300 text-slate-950" : "bg-slate-800 text-slate-200"}`}
+                >
+                  Mainnet
+                </button>
               </div>
             </div>
             <motion.div layout className="h-2 overflow-hidden bg-slate-800">
@@ -1352,17 +1373,17 @@ export default function App() {
               )}
             </div>
             <div className="space-y-1 text-xs text-slate-300">
-              <p>DEXes ({environment}): {
+              <p>DEXes ({effectiveEnvironment}): {
                 Object.keys(activeRuntime.dexRouters).length > 0
                   ? Object.keys(activeRuntime.dexRouters).join(", ")
                   : activeNetwork.dexes.join(", ")
               }</p>
-              <p>Flash loan providers ({environment}): {
+              <p>Flash loan providers ({effectiveEnvironment}): {
                 Object.keys(activeRuntime.flashProviderAddresses).length > 0
                   ? Object.keys(activeRuntime.flashProviderAddresses).join(", ")
                   : activeNetwork.flashLoanProviders.join(", ")
               }</p>
-              <p>Executor contract ({environment}): <span className="text-cyan-300">{activeNetwork.contractAddresses[environment]}</span></p>
+              <p>Executor contract ({effectiveEnvironment}): <span className="text-cyan-300">{activeNetwork.contractAddresses[effectiveEnvironment]}</span></p>
               <p>Multicall mode: {scanMeta.totalBatches} batches, batch size {scanMeta.multicallBatchSize}, pool universe {scanMeta.allPoolCount}</p>
               {selectedNetwork === "ethereum" && <p>Quote token universe: {scanMeta.quoteUniverse}</p>}
               {scanError && <p className="text-rose-300">{scanError}</p>}
